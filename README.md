@@ -1,5 +1,8 @@
 # Hana
-A [Sana](https://nvlabs.github.io/Sana/)-like diffusion model
+~~A [Sana](https://nvlabs.github.io/Sana/)-like diffusion model~~
+
+I have no idea what I am doing and that's why I do it
+
 
 <div align="center" border-radius="10px">
   <img src="assets/hana_logo_small.png" width="60%"/>
