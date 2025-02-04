@@ -15,26 +15,41 @@ def pil_clipscore(images, prompts, clip_model="openai/clip-vit-base-patch16"):
 # DC-AE scaling factor, see https://huggingface.co/Efficient-Large-Model/Sana_600M_1024px_diffusers/blob/main/vae/config.json
 dcae_scalingf = 0.41407
 
+# input: Tensor [B, C, W, H]
+# output: PIL image(s), list, or single if B==1
 def latent_to_PIL(latent, ae):
     with torch.no_grad():
-        image_out = ae.decode(latent).sample.squeeze().to("cpu")    
-    image_out = torch.clamp_(image_out, -1, 1)    # clamp, because output of is AE sometimes out of [-1;1] for some reason
-    image_out = image_out * 0.5 + 0.5 # normalize to 0-1    
-    return T.ToPILImage()(image_out.float())  
+        image_out = ae.decode(latent).sample.to("cpu")
+    
+    if image_out.size(0) == 1:
+        # Single image processing
+        image_out = torch.clamp_(image_out[0,:], -1, 1)
+        image_out = image_out * 0.5 + 0.5
+        return T.ToPILImage()(image_out.float())
+    else:
+        images = []
+        for img in image_out:
+            img = torch.clamp_(img, -1, 1)
+            img = img * 0.5 + 0.5
+            images.append(T.ToPILImage()(img.float()))
+        return images
 
-def PILs_to_latents(images, ae):
+# input: PIL image(s), list or single 
+# output: Tensor [B, C, W, H]
+def PIL_to_latent(images, ae):
     transform = T.Compose([
         T.ToTensor(),
         T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         lambda x: x.to(dtype=torch.bfloat16)
     ])
 
+    if not isinstance(images, (list, tuple)): images = [images]
+    
     images_tensors = torch.cat([transform(image)[None] for image in images])
     
     with torch.no_grad():
         latent = ae.encode(images_tensors.to(ae.device))
     return latent.latent
-
 
 def make_grid(images, rows=1, cols=None):
     if cols is None: cols = len(images)
