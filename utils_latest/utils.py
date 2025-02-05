@@ -59,6 +59,22 @@ def make_grid(images, rows=1, cols=None):
         grid.paste(image, box=(i%cols*w, i//cols*h))
     return grid
 
+# stolen from HF https://github.com/huggingface/diffusers/blob/5b1dcd15848f6748c6cec978ef962db391c4e4cd/src/diffusers/training_utils.py#L295
+def free_memory():
+    """
+    Runs garbage collection. Then clears the cache of the available accelerator.
+    """
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+    elif is_torch_npu_available():
+        torch_npu.npu.empty_cache()
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        torch.xpu.empty_cache()
+
 def encode_prompt(prompt, tokenizer, text_encoder):
     # lower case prompt! took a long time to find that this is necessary: https://github.com/huggingface/diffusers/blob/e8aacda762e311505ba05ae340af23b149e37af3/src/diffusers/pipelines/sana/pipeline_sana.py#L433
     tokenizer.padding_side = "right"
@@ -73,6 +89,8 @@ def load_imagenet_labels():
     response = requests.get(raw_url)
     imagenet_labels = json.loads(response.text)
     return imagenet_labels
+
+mnist_labels = {i: str(i) for i in range(10)}
 
 cifar10_labels = {
     0: "airplane",
