@@ -1,10 +1,30 @@
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from torchvision.transforms.functional import pil_to_tensor
 from torchmetrics.functional.multimodal import clip_score
 import torch
 import torchvision.transforms as T
 import json
 import requests
+
+def pil_add_text(image, text, position=None, font_size=None, font_color=(255, 255, 255), 
+                       font_path="DejaVuSans.ttf", stroke_width=1, stroke_fill=(0, 0, 0)):
+    w, h = image.size
+    if position is None: position = (w//10, h//10)
+    if font_size is None: font_size = round(h*0.2)
+    img_copy = image.copy()
+    draw = ImageDraw.Draw(img_copy)
+    font = ImageFont.truetype(font_path, font_size)
+
+    draw.text(
+        position,
+        text,
+        font=font,
+        fill=font_color,
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill
+    )
+    
+    return img_copy
 
 def pil_clipscore(images, prompts, clip_model="openai/clip-vit-base-patch16"):
     images_tens = [pil_to_tensor(i) for i in images]
