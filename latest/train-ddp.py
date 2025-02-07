@@ -90,6 +90,7 @@ def get_timesteps(num_steps):
 
 def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, latent_seed=42):
 	assert latent_dim is not None
+
 	dt, timesteps = get_timesteps(num_steps)
 	prompt_encoded, prompt_atnmask = encode_prompt(str(prompt), tokenizer, text_encoder)
 	latent = torch.randn(latent_dim, generator = torch.manual_seed(latent_seed)).to(dtype).to(device)
@@ -148,9 +149,9 @@ if __name__ == '__main__':
 	bs = 512
 	epochs = 1000
 	timesteps_training = 1000
-	steps_log, steps_eval = 1, 100
+	steps_log, steps_eval = 20, 300
 	# steps_log, steps_eval = 10, 20
-	wandb_project = "Hana-trainer-tests"
+	wandb_project = "Hana"
 
 	# Load all the models
 	transformer, text_encoder, tokenizer, dcae = load_models(
@@ -168,7 +169,8 @@ if __name__ == '__main__':
 	ds, ds_splits, latent_shape = load_data("g-ronimo/CIFAR10-128-latents_dc-ae-f32c32-sana-1.0")
 	labels = cifar10_labels
 	eval_labels = labels
-	collate = partial(collate_, labels_encoded = {k: encode_prompt(str(k), tokenizer, text_encoder) for k in labels})
+	# CHECK THIS LINE WHENEVER YOU CHANGE THE DATASET!
+	collate = partial(collate_, labels_encoded = {k: encode_prompt(str(labels[k]), tokenizer, text_encoder) for k in labels})
 	dataloader_train, dataloader_eval = get_dataloaders(ds, ds_splits, bs)
 	steps_epoch = len(dataloader_train)
 
@@ -177,25 +179,26 @@ if __name__ == '__main__':
 		print("Labels:")
 		for k in labels: print(f"{k}: {labels[k]}")
 
+		print("Eval Labels:")
+		for k in eval_labels: print(f"{k}: {eval_labels[k]}")
+
 		print("Inspecting first batch")
 		def inspect_first_batch():
 			labels, latents, prompts_encoded, prompts_atnmask = next(iter(dataloader_train))
 			print(labels, [eval_labels[l] for l in labels])
-			make_grid(latent_to_PIL(latents, dcae)).save("test_first_batch.png")
+			make_grid(latent_to_PIL(latents, dcae), 10, 10).save("test_first_batch.png")
 		inspect_first_batch()
-
-		print("Testing generate")
-		print(generate("horse", tokenizer, text_encoder, num_steps=10, latent_dim=latent_shape).resize((128,128)))
 
 		print("Testing eval loss")
 		print(eval_loss(dataloader_eval, testing=True))
 
 		print("Testing eval images and clip score")
 		images = [
-			generate(p, tokenizer, text_encoder, latent_dim=latent_shape, num_steps=10) 
-			for p in tqdm([labels[k] for k in labels], "eval_images")
+			generate(p, tokenizer, text_encoder, latent_dim=latent_shape) 
+			for p in tqdm([eval_labels[k] for k in eval_labels], "eval_images")
 		]
-		print(eval_clipscore(images, labels))
+		make_grid(images).save("test_eval_images.png")
+		print(eval_clipscore(images, eval_labels))
 
 		print(f"steps per epoch: {steps_epoch}")
 
@@ -212,20 +215,23 @@ if __name__ == '__main__':
 		wandb.init(project=wandb_project, name=wandb_run).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
 	# TRAIN!
+	transformer.train()
 	step = 0
 	last_step_time = time.time()
 
-	for _ in range(epochs):
+	for epoch in range(epochs):
+		dataloader_train.sampler.set_epoch(epoch)
+
 		for labels, latents, prompts_encoded, prompts_atnmask in dataloader_train:
 			latents = latents * dcae_scalingf
 			latents_noisy, noise, t = add_random_noise(latents)
 			noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
-			loss = F.mse_loss(noise_pred, noise - latents)
 
+			optimizer.zero_grad()    
+			loss = F.mse_loss(noise_pred, noise - latents)
 			loss.backward()
 			grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
 			optimizer.step()
-			optimizer.zero_grad()    
 
 			if is_master and step>0 and step % steps_log == 0:
 				loss_train = loss.item()
