@@ -5,9 +5,16 @@ import torch
 import torchvision.transforms as T
 import json
 import requests
+import gc
+import platform
 
 def pil_add_text(image, text, position=None, font_size=None, font_color=(255, 255, 255), 
-                       font_path="DejaVuSans.ttf", stroke_width=1, stroke_fill=(0, 0, 0)):
+                       font_path=None, stroke_width=1, stroke_fill=(0, 0, 0)):
+    if font_path is None: 
+        if platform.system() == "Darwin":
+            font_path = "Times.ttc"
+        else:
+            font_path = "DejaVuSans.ttf"
     w, h = image.size
     if position is None: position = (w//10, h//10)
     if font_size is None: font_size = round(h*0.2)
