@@ -261,7 +261,7 @@ if __name__ == '__main__':
 				val_images_labeled = make_grid(val_images_labeled, ceil(len(val_images_labeled)/5), 5)
 				clipscore = pil_clipscore(val_images, prompts)
 				print(f"step {step}, eval loss: {loss_eval:.4f}, clipscore: {clipscore:.2f}")
-				if log_wandb: wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(val_images_labeled), "step": step, "sample_count": step * bs, "epoch": step / steps_epoch})
+				if log_wandb: wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(val_images_labeled), "step": step, "sample_count": step * bs * world_size, "epoch": step / steps_epoch})
 				free_memory()
 
 				transformer.train()
