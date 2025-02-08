@@ -13,7 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
 from math import ceil
 
-from utils import latent_to_PIL, pil_add_text, make_grid, encode_prompt, dcae_scalingf, pil_clipscore, cifar10_labels, free_memory, mnist_labels
+from utils import load_imagenet_labels, latent_to_PIL, pil_add_text, make_grid, encode_prompt, dcae_scalingf, pil_clipscore, cifar10_labels, free_memory, mnist_labels
 
 def load_models(text_encoder, transformer_config, ae, dtype, device):
 	transformer = SanaTransformer2DModel.from_config(transformer_config).to(device).to(dtype)
@@ -32,12 +32,17 @@ def load_data(repo_name, col_latent = "latent", col_label = "label"):
 		print(f"loading dataset {repo_name}")
 
 	ds = load_dataset(repo_name)
+	# ImageNet
+	del ds["test"]
+
 	splits = [k for k in ds]
-	latent_shape = torch.Tensor(ds[splits[0]][0][col_latent]).shape
+	# latent_shape = torch.Tensor(ds[splits[0]][0][col_latent]).shape
+	# ImageNet
+	latent_shape = torch.Tensor(ds[splits[0]][0][col_latent])[None,].shape
 	features = ds[splits[0]].features
 
 	assert len(splits)==2
-	assert len(latent_shape)==4
+	assert len(latent_shape)==4, f"Latent shape not 4! {latent_shape}"
 	assert col_latent in features and col_label in features
 
 	if is_master:
@@ -49,14 +54,16 @@ def load_data(repo_name, col_latent = "latent", col_label = "label"):
 def collate_(items, labels_encoded, col_latent = "latent", col_label = "label"):
 	assert col_latent in items[0] and col_label in items[0]
 	labels = [i[col_label] for i in items]
-	latents = torch.cat([torch.Tensor(i[col_latent]) for i in items]).to(dtype).to(device)
+	# latents = torch.cat([torch.Tensor(i[col_latent]) for i in items]).to(dtype).to(device)
+	# ImageNet dataset is [32, 8, 8] instead of [1, 32, 8, 8] => stack!	
+	latents = torch.stack([torch.Tensor(i[col_latent]) for i in items]).to(dtype).to(device)
 	prompts_encoded = torch.cat([labels_encoded[label][0] for label in labels])
 	prompts_atnmask = torch.cat([labels_encoded[label][1] for label in labels])
 
 	return labels, latents, prompts_encoded, prompts_atnmask
 
 def get_dataloaders(ds, splits, bs):
-	batch_sizes = [bs, bs//2]    # reduce eval_batch size
+	batch_sizes = [bs, bs]    # reduce eval_batch size
 	dataloaders = []
 	for i, split in enumerate(splits):
 		batch_size = batch_sizes[i]
@@ -152,12 +159,11 @@ if __name__ == '__main__':
 	dtype = torch.bfloat16
 	device = "cuda" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu"
 	lr = 5e-4
-	# bs = 512
-	bs = 100
+	bs = 256
 	epochs = 1000
 	timesteps_training = 1000
 	# steps_log, steps_eval = 20, 300
-	steps_log, steps_eval = 10, 20
+	steps_log, steps_eval = 20, 1000
 	wandb_project = "Hana"
 
 	# Load all the models
@@ -172,9 +178,9 @@ if __name__ == '__main__':
 	transformer = DistributedDataParallel(transformer, device_ids=[local_rank])
 
 	# Load dataset
-	# ds, ds_splits, latent_shape = load_data("g-ronimo/MNIST-latents_dc-ae-f32c32-sana-1.0")
-	ds, ds_splits, latent_shape = load_data("g-ronimo/CIFAR10-128-latents_dc-ae-f32c32-sana-1.0")
-	labels = cifar10_labels
+	ds, ds_splits, latent_shape = load_data("g-ronimo/Imagenet-256-latents_dc-ae-f32c32-sana-1.0")
+	labels = load_imagenet_labels()
+	labels = {k:v for k,v in enumerate(labels)}
 	eval_labels = labels
 	# CHECK THIS LINE WHENEVER YOU CHANGE THE DATASET!
 	collate = partial(collate_, labels_encoded = {k: encode_prompt(str(labels[k]), tokenizer, text_encoder) for k in labels})
@@ -183,24 +189,24 @@ if __name__ == '__main__':
 
 	# Run some tests on master
 	if is_master:
-		print("Labels:")
-		for k in labels: print(f"{k}: {labels[k]}")
-
-		print("Eval Labels:")
-		for k in eval_labels: print(f"{k}: {eval_labels[k]}")
+		# print("Labels:")
+		# for k in labels: print(f"{k}: {labels[k]}")
 
 		print("Inspecting first batch")
 		def inspect_first_batch():
 			labels, latents, prompts_encoded, prompts_atnmask = next(iter(dataloader_train))
 			print(labels, [eval_labels[l] for l in labels])
+			print("latents shape of batch", latents.shape)
 			make_grid(latent_to_PIL(latents, dcae), 10, 10).save("test_first_batch.png")
-		inspect_first_batch()
+		# OOM because latent_to_PIL on 256 samples is too many 
+		# inspect_first_batch()
 
 		print("Testing eval loss")
 		print(eval_loss(dataloader_eval, testing=True))
 
 		print("Testing eval images and clip score")
 		prompts = [eval_labels[k] for k in eval_labels]
+		prompts = prompts[:20]
 		images, images_labeled = eval_images(prompts)
 		make_grid(images_labeled, ceil(len(images)/5), 5).save("test_eval_images.png")
 		print(pil_clipscore(images, prompts))
@@ -209,9 +215,10 @@ if __name__ == '__main__':
 
 		model_size = sum(p.numel() for p in transformer.parameters())
 		wandb_run = f"{model_size / 1e6:.2f}M_CIFAR-10_LR-{lr}_BS-{bs}_TS-{timesteps_training}_DDP-{world_size}x3090"
+		del prompts
 
 	optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
-	del labels, prompts
+	del labels
 	free_memory()
 
 	# Setup wandb
@@ -243,13 +250,13 @@ if __name__ == '__main__':
 				step_time = (time.time() - last_step_time) / steps_log * 1000
 				sample_tp = (bs * world_size * steps_log) / (time.time() - last_step_time)
 				print(f"step {step}, epoch: {step / steps_epoch:.4f}, train loss: {loss_train:.4f}, grad_norm: {grad_norm:.2f}, {step_time:.2f}ms/step, {sample_tp:.2f}samples/sec")
-				if log_wandb: wandb.log({"loss_train": loss_train, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": step * bs, "epoch": step / steps_epoch})
+				if log_wandb: wandb.log({"loss_train": loss_train, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": step * bs * world_size, "epoch": step / steps_epoch})
 				last_step_time = time.time()
 
 			if is_master and step>0 and step % steps_eval == 0:
 				transformer.eval()
 				loss_eval = eval_loss(dataloader_eval)
-				prompts = [eval_labels[k] for k in eval_labels]
+				prompts = [eval_labels[k] for k in eval_labels][:20]
 				val_images, val_images_labeled = eval_images(prompts)
 				val_images_labeled = make_grid(val_images_labeled, ceil(len(val_images_labeled)/5), 5)
 				clipscore = pil_clipscore(val_images, prompts)
