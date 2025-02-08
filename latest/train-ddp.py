@@ -11,8 +11,9 @@ from functools import partial
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
+from math import ceil
 
-from utils import latent_to_PIL, make_grid, encode_prompt, dcae_scalingf, pil_clipscore, cifar10_labels, free_memory, mnist_labels
+from utils import latent_to_PIL, pil_add_text, make_grid, encode_prompt, dcae_scalingf, pil_clipscore, cifar10_labels, free_memory, mnist_labels
 
 def load_models(text_encoder, transformer_config, ae, dtype, device):
 	transformer = SanaTransformer2DModel.from_config(transformer_config).to(device).to(dtype)
@@ -102,10 +103,6 @@ def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, la
 
 	return latent_to_PIL(latent / dcae_scalingf, dcae)
 
-def eval_clipscore(images, labels):
-	prompts = [labels[k] for k in labels]
-	return pil_clipscore(images, prompts)
-
 def add_random_noise(latents, timesteps=1000):
 	noise = torch.randn_like(latents)
 	t = torch.randint(1, timesteps + 1, (latents.size(0),)).to(device)
@@ -128,6 +125,15 @@ def eval_loss(dataloader_eval, timesteps=1000, testing=False):
 		if testing: break
 	return sum(losses)/len(losses)
 
+def eval_images(prompts):
+    images = [
+        generate(p, tokenizer, text_encoder, latent_dim=latent_shape, num_steps=10) 
+        for p in tqdm(prompts, "eval_images")
+    ]    
+    images_labeled = [pil_add_text(images[i], prompt) for i, prompt in enumerate(prompts)]
+
+    return images, images_labeled
+
 if __name__ == '__main__':
 	dist.init_process_group(backend='nccl')
 
@@ -142,15 +148,16 @@ if __name__ == '__main__':
 	torch.cuda.set_device(local_rank)
 
 	# Training params
+	log_wandb = True
 	dtype = torch.bfloat16
 	device = "cuda" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu"
-	log_wandb = True
 	lr = 5e-4
-	bs = 512
+	# bs = 512
+	bs = 100
 	epochs = 1000
 	timesteps_training = 1000
-	steps_log, steps_eval = 20, 300
-	# steps_log, steps_eval = 10, 20
+	# steps_log, steps_eval = 20, 300
+	steps_log, steps_eval = 10, 20
 	wandb_project = "Hana"
 
 	# Load all the models
@@ -193,12 +200,10 @@ if __name__ == '__main__':
 		print(eval_loss(dataloader_eval, testing=True))
 
 		print("Testing eval images and clip score")
-		images = [
-			generate(p, tokenizer, text_encoder, latent_dim=latent_shape) 
-			for p in tqdm([eval_labels[k] for k in eval_labels], "eval_images")
-		]
-		make_grid(images).save("test_eval_images.png")
-		print(eval_clipscore(images, eval_labels))
+		prompts = [eval_labels[k] for k in eval_labels]
+		images, images_labeled = eval_images(prompts)
+		make_grid(images_labeled, ceil(len(images)/5), 5).save("test_eval_images.png")
+		print(pil_clipscore(images, prompts))
 
 		print(f"steps per epoch: {steps_epoch}")
 
@@ -206,7 +211,7 @@ if __name__ == '__main__':
 		wandb_run = f"{model_size / 1e6:.2f}M_CIFAR-10_LR-{lr}_BS-{bs}_TS-{timesteps_training}_DDP-{world_size}x3090"
 
 	optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
-	del labels
+	del labels, prompts
 	free_memory()
 
 	# Setup wandb
@@ -244,10 +249,14 @@ if __name__ == '__main__':
 			if is_master and step>0 and step % steps_eval == 0:
 				transformer.eval()
 				loss_eval = eval_loss(dataloader_eval)
-				images_eval = [generate(p, tokenizer, text_encoder, latent_dim=latent_shape) for p in tqdm([eval_labels[k] for k in eval_labels], "eval_images")]
-				clipscore = eval_clipscore(images_eval, eval_labels)
+				prompts = [eval_labels[k] for k in eval_labels]
+				val_images, val_images_labeled = eval_images(prompts)
+				val_images_labeled = make_grid(val_images_labeled, ceil(len(val_images_labeled)/5), 5)
+				clipscore = pil_clipscore(val_images, prompts)
 				print(f"step {step}, eval loss: {loss_eval:.4f}, clipscore: {clipscore:.2f}")
-				if log_wandb: wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(make_grid(images_eval, 2, 5)), "step": step, "sample_count": step * bs, "epoch": step / steps_epoch})
+				if log_wandb: wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(val_images_labeled), "step": step, "sample_count": step * bs, "epoch": step / steps_epoch})
+				free_memory()
+
 				transformer.train()
 			step += 1
 
