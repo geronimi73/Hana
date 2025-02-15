@@ -7,6 +7,16 @@ import json
 import requests
 import gc
 import platform
+import matplotlib.pyplot as plt
+
+def plot_density(x, title=""):
+    plt.figure(figsize=(5, 3))
+    plt.hist(x, bins=50, density=True, alpha=0.7)
+    plt.title(title)
+    plt.xlabel('x')
+    plt.ylabel('Density')
+    plt.grid(True, alpha=0.3)
+    plt.show()
 
 def pil_add_text(image, text, position=None, font_size=None, font_color=(255, 255, 255), 
                        font_path=None, stroke_width=1, stroke_fill=(0, 0, 0)):
