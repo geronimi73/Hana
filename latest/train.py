@@ -3,8 +3,9 @@
 # %% auto 0
 __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_config', 'train_config', 'transformer',
            'text_encoder', 'tokenizer', 'dcae', 'ds', 'latent_shape', 'collate_fn', 'dataloader_train',
-           'dataloader_eval', 'optimizer', 'wandb_run', 'steps_epoch', 'step', 'last_step_time', 'load_models',
-           'load_data', 'collate_', 'get_dataloader', 'get_timesteps', 'generate', 'add_random_noise', 'eval_loss']
+           'dataloader_train_sampler', 'dataloader_eval', 'optimizer', 'wandb_run', 'steps_epoch', 'step',
+           'last_step_time', 'load_models', 'load_data', 'collate_', 'get_dataloader', 'get_timesteps', 'get_sigmas',
+           'add_random_noise', 'generate', 'eval_loss']
 
 # %% train.ipynb 3
 import torch, torch.nn.functional as F, random, wandb, time
@@ -22,11 +23,22 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
 
-from utils import pil_add_text, latent_to_PIL, make_grid, fmnist_labels, encode_prompt, dcae_scalingf, pil_clipscore, cifar10_labels, free_memory, mnist_labels
+from utils import (
+    plot_density, 
+    pil_add_text, 
+    latent_to_PIL, 
+    make_grid, 
+    fmnist_labels, 
+    encode_prompt, 
+    dcae_scalingf, 
+    pil_clipscore, 
+    cifar10_labels, 
+    free_memory, 
+    mnist_labels
+)
 
 seed = 42
 set_seed(seed)
-
 
 # %% train.ipynb 4
 def load_models(text_encoder, transformer_config, ae, dtype, device):
@@ -74,14 +86,6 @@ def collate_(items, labels_encoded, col_latent = "latent", col_label = "label"):
 def get_dataloader(dataset, batch_size, collate_fn):
     if ddp:
         sampler = DistributedSampler(dataset, shuffle = True, seed = seed)
-        # dataloader = DataLoader(
-        #     dataset=dataset, 
-        #     batch_size=batch_size, 
-        #     shuffle=False, 
-        #     sampler=sampler,
-        #     collate_fn=collate_fn,
-        #     # pin_memory = True,
-        # )
     else:
         sampler = RandomSampler(dataset, generator = torch.manual_seed(seed))
         
@@ -98,12 +102,35 @@ def get_dataloader(dataset, batch_size, collate_fn):
             coltype = type(col)
             collength = len(col) if coltype==list else col.shape
             print(f" col {i} {coltype.__name__} {collength}")
-    return dataloader
+    return dataloader, sampler
     
 def get_timesteps(num_steps):
     dt = 1.0 / num_steps
     timesteps = [int(i/num_steps*1000) for i in range(num_steps, 0, -1)]
     return dt, timesteps
+
+def get_sigmas(num_samples, dist="normal"):
+    if dist == "normal":
+        sigmas = torch.randn((num_samples,)).sigmoid()
+    elif dist == "uniform":
+        sigmas = torch.rand((num_samples,))
+    elif dist == "beta":
+        beta_dist = torch.distributions.beta.Beta(torch.tensor(1), torch.tensor(2.5))
+        sigmas = beta_dist.sample([num_samples])
+    else:
+        assert True==False, f"unknown distribution {dist}"
+    return sigmas
+
+def add_random_noise(latents, dist, timesteps=1000):
+    bs = latents.size(0)
+    noise = torch.randn_like(latents)
+    sigmas = get_sigmas(bs, dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
+    timesteps = (sigmas * timesteps).to(latents.device)   # yes, let's keep it simple
+    sigmas = sigmas.view([latents.size(0), *([1] * len(latents.shape[1:]))])
+    
+    latents_noisy = (1 - sigmas) * latents + sigmas * noise # (1-noise_level) * latent + noise_level * noise
+
+    return latents_noisy.to(latents.dtype), noise, timesteps
 
 def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, latent_seed=None):
     assert latent_dim is not None
@@ -118,27 +145,12 @@ def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, la
 
     return latent_to_PIL(latent / dcae_scalingf, dcae)
 
-def add_random_noise(latents, timesteps=1000):
-    noise_dist = train_config.timestep_sampling
-    bs = latents.size(0)
-    noise = torch.randn_like(latents)
-    if noise_dist=="uniform":
-        t = torch.randint(1, timesteps + 1, (bs,)).to(device)
-        # t = torch.Tensor([900]*bs).to(torch.int64).to(device)
-    elif noise_dist=="beta":
-        beta = torch.distributions.beta.Beta(torch.tensor(1), torch.tensor(2.5))
-        t = (beta.sample([bs])*timesteps).to(torch.int64).to(device)
-    tperc = t.view([latents.size(0), *([1] * len(latents.shape[1:]))])/timesteps
-    latents_noisy = (1 - tperc) * latents + tperc * noise # (1-noise_level) * latent + noise_level * noise
-
-    return latents_noisy, noise, t
-
-def eval_loss(dataloader_eval, timesteps=1000, testing=False):
+def eval_loss(dataloader_eval, testing=False):
     losses = []
 
     for batch_num, (labels, latents, prompts_encoded, prompts_atnmask) in tqdm(enumerate(dataloader_eval), "eval_loss"):
         latents = latents * dcae_scalingf
-        latents_noisy, noise, t = add_random_noise(latents, timesteps)
+        latents_noisy, noise, t = add_random_noise(latents, dist=train_config.sigma_sampling)
         with torch.no_grad():
             noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
     
@@ -173,12 +185,12 @@ train_config = SimpleNamespace(
     bs = 1024,
     epochs = 20,
     steps_log = 10,
-    steps_eval = 100,
+    steps_eval = 300,
     eval_prompts = [data_config.labels_dict[k] for k in data_config.labels_dict],
     eval_seeds = [6945, 4009, 1479, 8141, 3441], # seeds for latent generation
     eval_timesteps = 100, # number of timesteps for generating eval images
     timesteps_training = 1000,
-    timestep_sampling = "beta",  # beta uniform
+    sigma_sampling = "normal",  # beta uniform normal
     log_wandb = True,
     wandb_project = "Hana",
     wandb_run = "Sana-DiT-S-{size:.2f}M_{ds}_LR-{lr}_BS-{bs}_{ts_sampling}-TS-{ts}_{device}",
@@ -220,8 +232,8 @@ collate_fn = partial(
         for k in data_config.labels_dict
     }
 )
-dataloader_train = get_dataloader(ds[data_config.split_train], train_config.bs, collate_fn)
-dataloader_eval =  get_dataloader(ds[data_config.split_eval], train_config.bs, collate_fn)
+dataloader_train, dataloader_train_sampler = get_dataloader(ds[data_config.split_train], train_config.bs, collate_fn)
+dataloader_eval, _ =  get_dataloader(ds[data_config.split_eval], train_config.bs, collate_fn)
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=train_config.lr)
 
@@ -230,7 +242,7 @@ wandb_run = train_config.wandb_run.format(
     lr=train_config.lr, 
     bs=train_config.bs, 
     ts=train_config.timesteps_training,
-    ts_sampling=train_config.timestep_sampling.upper(),
+    ts_sampling=train_config.sigma_sampling.upper(),
     device=device,
     ds=data_config.dataset.split("/")[1].split("-")[0]
 )
@@ -253,10 +265,13 @@ step = 0
 last_step_time = time.time()
 free_memory()
 
-for _ in range(train_config.epochs):
+for epoch in range(train_config.epochs):
+    if ddp:
+        dataloader_train_sampler.set_epoch(epoch)
+    
     for labels, latents, prompts_encoded, prompts_atnmask in dataloader_train:
         latents = latents * dcae_scalingf
-        latents_noisy, noise, t = add_random_noise(latents)
+        latents_noisy, noise, t = add_random_noise(latents, dist = train_config.sigma_sampling)
         noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
         loss = F.mse_loss(noise_pred, noise - latents)
         
