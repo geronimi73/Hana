@@ -5,7 +5,7 @@ __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_conf
            'text_encoder', 'tokenizer', 'dcae', 'ds', 'latent_shape', 'collate_fn', 'dataloader_train',
            'dataloader_train_sampler', 'dataloader_eval', 'optimizer', 'wandb_run', 'steps_epoch', 'step',
            'last_step_time', 'load_models', 'load_data', 'collate_', 'get_dataloader', 'generate_lms', 'generate',
-           'add_random_noise', 'eval_loss', 'ae_te_to_CPU', 'ae_te_to_GPU']
+           'add_random_noise', 'eval_loss']
 
 # %% train.ipynb 3
 import torch, torch.nn.functional as F, random, wandb, time
@@ -59,26 +59,16 @@ def load_models(text_encoder, transformer_config, ae, dtype, device):
 
 def load_data(repo_name, split_train="train", split_test="test", col_latent = "latent", col_label = "label"):
     print(f"loading dataset {repo_name}")
-    
-    ds = load_dataset(repo_name)
-    # Convert latent column to Tensor 
-    for split in ds: 
-        if split in [split_train, split_test]: 
-            def to_tensor(item):
-                item[col_latent]=torch.Tensor(item[col_latent])
-                return item
-            ds[split] = ImageDataset(ds[split])
-        else:     
-            del ds[split]
-            
-    # B, C, W, H = torch.Tensor(ds[split_train][0][col_latent]).shape
-    B, C, W, H = ds[split_train][0][col_latent].shape
-    latent_shape = [1, C, W, H] # Set first dimension to 1 - dataset might have batch dim>1 because augmentations
-    features = ds[split_train].features
 
+    ds_hf = load_dataset(repo_name)
+    assert split_train in ds_hf and split_test in ds_hf
+    ds = {
+        split: ImageDataset(ds_hf[split], col_label=col_label, col_latent=col_latent) 
+        for split in [split_train, split_test]
+    }
+            
+    latent_shape = ds[split_train][0][col_latent].shape
     assert len(latent_shape)==4
-    assert col_latent in features and col_label in features
-    assert ds[split_train].features==ds[split_test].features
 
     if debug:
         for i, split in enumerate([split_train, split_test]): 
@@ -89,23 +79,16 @@ def load_data(repo_name, split_train="train", split_test="test", col_latent = "l
     
 def collate_(items, labels_encoded, col_latent = "latent", col_label = "label"):
     assert col_latent in items[0] and col_label in items[0]
-    latents_per_img = items[0][col_latent].size(0)
-    # if we have more then one latent per image = augmentations -> pick a random one
-    latents = torch.cat([
-        i[col_latent][None, random.randint(0, latents_per_img-1)] 
-        for i in items
-    ]).to(dtype).to(device)
     labels = [i[col_label] for i in items]
+    latents = torch.cat([i[col_latent] for i in items]).to(dtype).to(device)
     prompts_encoded = torch.cat([labels_encoded[label][0] for label in labels])
     prompts_atnmask = torch.cat([labels_encoded[label][1] for label in labels])
 
     return labels, latents, prompts_encoded, prompts_atnmask
 
 def get_dataloader(dataset, batch_size, collate_fn):
-    if ddp:
-        sampler = DistributedSampler(dataset, shuffle = True, seed = seed)
-    else:
-        sampler = RandomSampler(dataset, generator = torch.manual_seed(seed))
+    if ddp: sampler = DistributedSampler(dataset, shuffle = True, seed = seed)
+    else: sampler = RandomSampler(dataset, generator = torch.manual_seed(seed))
         
     dataloader = DataLoader(
         dataset, 
@@ -169,7 +152,7 @@ def add_random_noise(latents, dist, timesteps=1000):
     bs = latents.size(0)
     noise = torch.randn_like(latents)
     sigmas = get_rnd_sigmas(bs, dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
-    timesteps = (sigmas * timesteps).to(latents.device)   # yes, let's keep it simple
+    timesteps = (sigmas * timesteps).to(latents.device)   # yes, `timesteps = sigmas * 1000`, let's keep it simple
     sigmas = sigmas.view([latents.size(0), *([1] * len(latents.shape[1:]))])
     
     latents_noisy = (1 - sigmas) * latents + sigmas * noise # (1-noise_level) * latent + noise_level * noise
@@ -189,16 +172,6 @@ def eval_loss(dataloader_eval, testing=False):
         losses.append(loss.item())  
         if testing: break
     return sum(losses)/len(losses)
-
-def ae_te_to_CPU():
-    global text_encoder, dcae
-    text_encoder = text_encoder.cpu()
-    dcae = dcae.cpu()
-
-def ae_te_to_GPU():
-    global text_encoder, dcae
-    text_encoder = text_encoder.to(device)
-    dcae = dcae.to(device)
 
 # %% train.ipynb 5
 dtype = torch.bfloat16
@@ -295,7 +268,7 @@ if is_master:
     print(f"steps per epoch: {steps_epoch}")
 
 # %% train.ipynb 11
-ae_te_to_CPU()
+for model in [text_encoder, dcae]: model.to("cpu")
 free_memory()
 
 if is_master and train_config.log_wandb: 
@@ -337,7 +310,7 @@ for epoch in range(train_config.epochs):
         if is_master and step>0 and step % train_config.steps_eval == 0:
             transformer.eval()
             loss_eval = eval_loss(dataloader_eval)
-            ae_te_to_GPU()
+            for model in [text_encoder, dcae]: model.to(device)
 
             # try different seeds for generating eval images
             images_eval = [
@@ -355,9 +328,13 @@ for epoch in range(train_config.epochs):
             if train_config.log_wandb: 
                 wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(images_eval), "step": step, "sample_count": step * train_config.bs, "epoch": step / steps_epoch})
             transformer.train()        
-            ae_te_to_CPU()
+            for model in [text_encoder, dcae]: model.cpu()
 
         step += 1
 
 if ddp:
     dist.destroy_process_group()
+
+# %% train.ipynb 12
+if is_master:
+    transformer.push_to_hub(f"g-ronimo/hana-alpha22")

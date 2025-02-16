@@ -10,12 +10,15 @@ import requests
 import gc
 import platform
 import matplotlib.pyplot as plt
+import random
 
 # Custom dataset, got fed up with HF Datasets performance
 class ImageDataset(torch.utils.data.Dataset):
     def __init__(self, hf_dataset, col_label="label", col_latent="latent"):
         self.labels = []
         self.latents = []
+
+        assert col_label in hf_dataset.features and col_latent in hf_dataset.features, f"columns {col_label} and {col_latent} not found in dataset, features: {hf_dataset.features}"
 
         for item in tqdm(hf_dataset, "Converting HF to torch Dataset"):
             self.labels.append(item[col_label])
@@ -26,16 +29,25 @@ class ImageDataset(torch.utils.data.Dataset):
         return len(self.labels)
     
     def __getitem__(self, idx):
-        return dict(label=self.labels[idx], latent=self.latents[idx])
+        label = self.labels[idx]
+        latent = self.latents[idx]
+        # we have more then one latent per image = augmentations -> pick random one
+        if latent.size(0) > 1:
+            latent = latent[None, random.randint(0, latent.size(0) - 1)]
+
+        return dict(label=label, latent=latent)
 
 
-# condensed from https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_flow_match_euler_discrete.py
+# get a sigma schedule for inference 0->1
+# returns: sigmas, timesteps (=sigmas * 1000)
+# source: condensed from https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_flow_match_euler_discrete.py
 def get_sigma_schedule(steps, timesteps_train = 1000, flow_shift = 1.0):
     sigmas = torch.linspace(1, 0, steps + 1)
     sigmas = flow_shift * sigmas / (1 + (flow_shift - 1) * sigmas)
     timesteps = sigmas * timesteps_train
     return sigmas, timesteps
 
+# pick sigmas [0-1] from given distribution
 def get_rnd_sigmas(num_samples, dist="normal"):
     if dist == "normal":
         sigmas = torch.randn((num_samples,)).sigmoid()
@@ -63,9 +75,9 @@ def linear_multistep_coeff(order, t, i, j):
         return prod
     return integrate.quad(fn, t[i], t[i + 1], epsrel=1e-4)[0]
 
-def plot_density(x, title=""):
+def plot_density(x, title="", bins=50):
     plt.figure(figsize=(5, 3))
-    plt.hist(x, bins=50, density=True, alpha=0.7)
+    plt.hist(x, bins=bins, density=True, alpha=0.7)
     plt.title(title)
     plt.xlabel('x')
     plt.ylabel('Density')
