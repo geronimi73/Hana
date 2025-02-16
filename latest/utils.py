@@ -1,6 +1,8 @@
 from PIL import Image, ImageDraw, ImageFont
 from torchvision.transforms.functional import pil_to_tensor
 from torchmetrics.functional.multimodal import clip_score
+from tqdm import tqdm
+from scipy import integrate
 import torch
 import torchvision.transforms as T
 import json
@@ -9,7 +11,23 @@ import gc
 import platform
 import matplotlib.pyplot as plt
 
-from scipy import integrate
+# Custom dataset, got fed up with HF Datasets performance
+class ImageDataset(torch.utils.data.Dataset):
+    def __init__(self, hf_dataset, col_label="label", col_latent="latent"):
+        self.labels = []
+        self.latents = []
+
+        for item in tqdm(hf_dataset, "Converting HF to torch Dataset"):
+            self.labels.append(item[col_label])
+            self.latents.append(torch.Tensor(item[col_latent]))
+        self.features = [col_label, col_latent]
+
+    def __len__(self):
+        return len(self.labels)
+    
+    def __getitem__(self, idx):
+        return dict(label=self.labels[idx], latent=self.latents[idx])
+
 
 # condensed from https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_flow_match_euler_discrete.py
 def get_sigma_schedule(steps, timesteps_train = 1000, flow_shift = 1.0):
