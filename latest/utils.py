@@ -9,6 +9,42 @@ import gc
 import platform
 import matplotlib.pyplot as plt
 
+from scipy import integrate
+
+# condensed from https://github.com/huggingface/diffusers/blob/main/src/diffusers/schedulers/scheduling_flow_match_euler_discrete.py
+def get_sigma_schedule(steps, timesteps_train = 1000, flow_shift = 1.0):
+    sigmas = torch.linspace(1, 0, steps + 1)
+    sigmas = flow_shift * sigmas / (1 + (flow_shift - 1) * sigmas)
+    timesteps = sigmas * timesteps_train
+    return sigmas, timesteps
+
+def get_rnd_sigmas(num_samples, dist="normal"):
+    if dist == "normal":
+        sigmas = torch.randn((num_samples,)).sigmoid()
+    elif dist == "uniform":
+        sigmas = torch.rand((num_samples,))
+    elif dist in ["beta", "beta-high"]:
+        if dist == "beta": alpha, beta = 1, 2.5
+        else: alpha, beta = 2.5, 1        
+        beta_dist = torch.distributions.beta.Beta(torch.tensor(alpha), torch.tensor(beta))
+        sigmas = beta_dist.sample([num_samples])
+    else:
+        raise Exception(f"unknown distribution {dist}")
+    return sigmas
+
+# source: https://github.com/crowsonkb/k-diffusion/blob/8018de0b43da8d66617f3ef10d3f2a41c1d78836/k_diffusion/sampling.py#L247
+def linear_multistep_coeff(order, t, i, j):
+    if order - 1 > i:
+        raise ValueError(f'Order {order} too high for step {i}')
+    def fn(tau):
+        prod = 1.
+        for k in range(order):
+            if j == k:
+                continue
+            prod *= (tau - t[i - k]) / (t[i - j] - t[i - k])
+        return prod
+    return integrate.quad(fn, t[i], t[i + 1], epsrel=1e-4)[0]
+
 def plot_density(x, title=""):
     plt.figure(figsize=(5, 3))
     plt.hist(x, bins=50, density=True, alpha=0.7)

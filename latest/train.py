@@ -4,8 +4,8 @@
 __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_config', 'train_config', 'transformer',
            'text_encoder', 'tokenizer', 'dcae', 'ds', 'latent_shape', 'collate_fn', 'dataloader_train',
            'dataloader_train_sampler', 'dataloader_eval', 'optimizer', 'wandb_run', 'steps_epoch', 'step',
-           'last_step_time', 'load_models', 'load_data', 'collate_', 'get_dataloader', 'get_timesteps', 'get_sigmas',
-           'add_random_noise', 'generate', 'eval_loss']
+           'last_step_time', 'load_models', 'load_data', 'collate_', 'get_dataloader', 'generate_lms', 'generate',
+           'add_random_noise', 'eval_loss']
 
 # %% train.ipynb 3
 import torch, torch.nn.functional as F, random, wandb, time
@@ -34,7 +34,10 @@ from utils import (
     pil_clipscore, 
     cifar10_labels, 
     free_memory, 
-    mnist_labels
+    mnist_labels,
+    get_rnd_sigmas,
+    linear_multistep_coeff,
+    get_sigma_schedule,
 )
 
 seed = 42
@@ -104,46 +107,59 @@ def get_dataloader(dataset, batch_size, collate_fn):
             print(f" col {i} {coltype.__name__} {collength}")
     return dataloader, sampler
     
-def get_timesteps(num_steps):
-    dt = 1.0 / num_steps
-    timesteps = [int(i/num_steps*1000) for i in range(num_steps, 0, -1)]
-    return dt, timesteps
+# Testing, not used yet. https://github.com/crowsonkb/k-diffusion/blob/8018de0b43da8d66617f3ef10d3f2a41c1d78836/k_diffusion/sampling.py#L261
+def generate_lms(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, order=2, latent_seed=None):
+    prompt_encoded, prompt_atnmask = encode_prompt(str(prompt), tokenizer, text_encoder)
+    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(dtype).to(device)
+    sigmas, timesteps = get_sigma_schedule(num_steps)
+    ds = []
+    for i in tqdm(range(len(sigmas) - 1)):
+        t = timesteps[None, i].to(device)
+        with torch.no_grad():
+            noise_pred = transformer(
+                latent, 
+                timestep=t, 
+                encoder_hidden_states=prompt_encoded, 
+                encoder_attention_mask=prompt_atnmask, 
+                return_dict=False
+            )[0]
+        ds.append(noise_pred)
+        if len(ds) > order: ds.pop(0)
+        cur_order = min(i + 1, order)
+        coeffs = [linear_multistep_coeff(cur_order, sigmas, i, j) for j in range(cur_order)]
+        latent = latent + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
+    return latent_to_PIL(latent / dcae_scalingf, dcae)
 
-def get_sigmas(num_samples, dist="normal"):
-    if dist == "normal":
-        sigmas = torch.randn((num_samples,)).sigmoid()
-    elif dist == "uniform":
-        sigmas = torch.rand((num_samples,))
-    elif dist == "beta":
-        beta_dist = torch.distributions.beta.Beta(torch.tensor(1), torch.tensor(2.5))
-        sigmas = beta_dist.sample([num_samples])
-    else:
-        assert True==False, f"unknown distribution {dist}"
-    return sigmas
+def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, latent_seed=None):
+    assert latent_dim is not None
+    prompt_encoded, prompt_atnmask = encode_prompt(str(prompt), tokenizer, text_encoder)
+    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(dtype).to(device)
+    sigmas, timesteps = get_sigma_schedule(num_steps)
+
+    for t, sigma_prev, sigma_next in tqdm(zip(timesteps, sigmas[:-1], sigmas[1:])):
+        t = t[None].to(latent.dtype).to(device)
+        with torch.no_grad():
+            noise_pred = transformer(
+                latent, 
+                timestep=t, 
+                encoder_hidden_states=prompt_encoded, 
+                encoder_attention_mask=prompt_atnmask, 
+                return_dict=False
+            )[0]
+        latent = latent + (sigma_next - sigma_prev) * noise_pred 
+
+    return latent_to_PIL(latent / dcae_scalingf, dcae)
 
 def add_random_noise(latents, dist, timesteps=1000):
     bs = latents.size(0)
     noise = torch.randn_like(latents)
-    sigmas = get_sigmas(bs, dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
+    sigmas = get_rnd_sigmas(bs, dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
     timesteps = (sigmas * timesteps).to(latents.device)   # yes, let's keep it simple
     sigmas = sigmas.view([latents.size(0), *([1] * len(latents.shape[1:]))])
     
     latents_noisy = (1 - sigmas) * latents + sigmas * noise # (1-noise_level) * latent + noise_level * noise
 
     return latents_noisy.to(latents.dtype), noise, timesteps
-
-def generate(prompt, tokenizer, text_encoder, latent_dim=None, num_steps=100, latent_seed=None):
-    assert latent_dim is not None
-    dt, timesteps = get_timesteps(num_steps)
-    prompt_encoded, prompt_atnmask = encode_prompt(str(prompt), tokenizer, text_encoder)
-    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(dtype).to(device)
-    for t in timesteps:
-        t = torch.Tensor([t]).to(dtype).to(device)
-        with torch.no_grad():
-            noise_pred = transformer(latent, encoder_hidden_states=prompt_encoded, timestep=t, encoder_attention_mask=prompt_atnmask, return_dict=False)[0]
-        latent = latent - dt * noise_pred
-
-    return latent_to_PIL(latent / dcae_scalingf, dcae)
 
 def eval_loss(dataloader_eval, testing=False):
     losses = []
@@ -161,19 +177,19 @@ def eval_loss(dataloader_eval, testing=False):
 
 # %% train.ipynb 5
 dtype = torch.bfloat16
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu"
+device = "cuda" 
 debug = True
 ddp = True
 
 model_config = SimpleNamespace(
     text_encoder = "answerdotai/ModernBERT-base",
-    transformer_config = "transformer_Sana-DiT-S-MBERT.json",
+    transformer_config = "transformer_Sana-DiT-B-MBERT.json",
     ae = "Efficient-Large-Model/Sana_600M_1024px_diffusers",
 )
 
 data_config = SimpleNamespace(
-    dataset = "g-ronimo/FMNIST-latents-64_dc-ae-f32c32-sana-1.0",
-    labels_dict = fmnist_labels,
+    dataset = "g-ronimo/CIFAR10-64-latents_dc-ae-f32c32-sana-1.0",
+    labels_dict = cifar10_labels,
     col_label = "label",
     col_latent = "latent",
     split_train = "train",
@@ -183,7 +199,7 @@ data_config = SimpleNamespace(
 train_config = SimpleNamespace(
     lr = 5e-4,
     bs = 1024,
-    epochs = 20,
+    epochs = 500,
     steps_log = 10,
     steps_eval = 300,
     eval_prompts = [data_config.labels_dict[k] for k in data_config.labels_dict],
@@ -193,7 +209,7 @@ train_config = SimpleNamespace(
     sigma_sampling = "normal",  # beta uniform normal
     log_wandb = True,
     wandb_project = "Hana",
-    wandb_run = "Sana-DiT-S-{size:.2f}M_{ds}_LR-{lr}_BS-{bs}_{ts_sampling}-TS-{ts}_{device}",
+    wandb_run = "Sana-DiT-B-{size:.2f}M_{ds}_LR-{lr}_BS-{bs}_{ts_sampling}-TS-{ts}_{device}",
 )
 
 # %% train.ipynb 7
@@ -203,10 +219,10 @@ if ddp:
     world_size = dist.get_world_size()
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
-    bs_new = round(train_config.bs / world_size / 8) * 8
-    if is_master:
-        print(f"DDP: global batch size {train_config.bs} with world of {world_size} => setting per_device_bs to {bs_new}")
-    train_config.bs = bs_new
+    # bs_new = round(train_config.bs / world_size / 8) * 8
+    # if is_master:
+        # print(f"DDP: global batch size {train_config.bs} with world of {world_size} => setting per_device_bs to {bs_new}")
+    # train_config.bs = bs_new
     debug = debug and is_master
 else:
     is_master = True
@@ -296,7 +312,7 @@ for epoch in range(train_config.epochs):
 
             # try different seeds for generating eval images
             images_eval = [
-                generate(p, tokenizer, text_encoder, num_steps=train_config.eval_timesteps, latent_dim=latent_shape, latent_seed=seed) 
+                generate_lms(p, tokenizer, text_encoder, num_steps=train_config.eval_timesteps, latent_dim=latent_shape, latent_seed=seed) 
                 for seed in tqdm(train_config.eval_seeds, "eval_images")
                 for p in train_config.eval_prompts
             ]
