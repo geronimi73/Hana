@@ -332,9 +332,12 @@ for epoch in range(train_config.epochs):
 
         step += 1
 
-if ddp:
-    dist.destroy_process_group()
+# wait for all before saving? don't know
+if ddp: torch.distributed.barrier()
 
 # %% train.ipynb 12
 if is_master:
-    transformer.push_to_hub(f"g-ronimo/hana-alpha22")
+    wandb.finish()
+    transformer.module.push_to_hub(f"g-ronimo/hana-alpha22")
+
+if ddp: dist.destroy_process_group()
