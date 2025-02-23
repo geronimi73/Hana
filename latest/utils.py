@@ -37,6 +37,89 @@ class ImageDataset(torch.utils.data.Dataset):
 
         return dict(label=label, latent=latent)
 
+# source: FlowMatchEulerDiscreteScheduler 
+# https://github.com/huggingface/diffusers/blob/9c7e205176c30b27c5f44ec7650a8dfcc12dde86/src/diffusers/schedulers/scheduling_flow_match_euler_discrete.py#L47
+def generate(
+    prompt, 
+    transformer,
+    tokenizer, 
+    text_encoder, 
+    dcae,
+    neg_prompt="",
+    guidance_scale=None,
+    latent_dim=None, 
+    num_steps=100, 
+    latent_seed=None,
+    ):
+    
+    assert guidance_scale is None or neg_prompt is not None, "Neg. prompt has to be specified with CFG"
+    
+    do_cfg = guidance_scale is not None
+    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(transformer.dtype).to(transformer.device)
+    sigmas, timesteps = get_sigma_schedule(num_steps)
+    
+    prompt_encoded, prompt_atnmask = encode_prompt([prompt, neg_prompt] if do_cfg else prompt, tokenizer, text_encoder)
+    
+    for t, sigma_prev, sigma_next in zip(timesteps, sigmas[:-1], sigmas[1:]):
+        t = t[None].to(transformer.dtype).to(transformer.device)
+        with torch.no_grad():
+            noise_pred = transformer(
+                torch.cat([latent] * 2) if do_cfg else latent, 
+                timestep=torch.cat([t] * 2) if do_cfg else t, 
+                encoder_hidden_states=prompt_encoded, 
+                encoder_attention_mask=prompt_atnmask, 
+                return_dict=False
+            )[0]
+        
+        if do_cfg:
+            noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+        
+        latent = latent + (sigma_next - sigma_prev) * noise_pred 
+    return latent_to_PIL(latent / dcae_scalingf, dcae).resize((512, 512))
+
+
+# source: https://github.com/crowsonkb/k-diffusion/blob/8018de0b43da8d66617f3ef10d3f2a41c1d78836/k_diffusion/sampling.py#L261
+def generate_lms(
+    prompt, 
+    transformer,
+    dcae,
+    tokenizer, 
+    text_encoder, 
+    neg_prompt="",
+    guidance_scale=None,
+    latent_dim=None, 
+    num_steps=100, 
+    order=2, 
+    latent_seed=None
+):
+    do_cfg = guidance_scale is not None
+    # prompt_encoded, prompt_atnmask = encode_prompt(str(prompt), tokenizer, text_encoder)
+    prompt_encoded, prompt_atnmask = encode_prompt([prompt, neg_prompt] if do_cfg else prompt, tokenizer, text_encoder)
+    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(transformer.dtype).to(transformer.device)
+    sigmas, timesteps = get_sigma_schedule(num_steps)
+    
+    ds = []
+    for i in range(len(sigmas) - 1):
+        t = timesteps[None, i].to(transformer.device)
+        with torch.no_grad():
+            noise_pred = transformer(
+                torch.cat([latent] * 2) if do_cfg else latent, 
+                timestep=torch.cat([t] * 2) if do_cfg else t, 
+                encoder_hidden_states=prompt_encoded, 
+                encoder_attention_mask=prompt_atnmask, 
+                return_dict=False
+            )[0]
+        if do_cfg:
+            noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+        ds.append(noise_pred)
+        if len(ds) > order: ds.pop(0)
+        cur_order = min(i + 1, order)
+        coeffs = [linear_multistep_coeff(cur_order, sigmas, i, j) for j in range(cur_order)]
+        latent = latent + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
+    return latent_to_PIL(latent / dcae_scalingf, dcae)
+
 
 # get a sigma schedule for inference 0->1
 # returns: sigmas, timesteps (=sigmas * 1000)
@@ -181,11 +264,17 @@ def free_memory():
 def encode_prompt(prompt, tokenizer, text_encoder):
     # lower case prompt! took a long time to find that this is necessary: https://github.com/huggingface/diffusers/blob/e8aacda762e311505ba05ae340af23b149e37af3/src/diffusers/pipelines/sana/pipeline_sana.py#L433
     tokenizer.padding_side = "right"
-    prompt = prompt.lower().strip()
+    if isinstance(prompt, list):
+        prompt = [p.lower().strip() for p in prompt]
+    elif isinstance(prompt, str):
+        prompt = prompt.lower().strip()
+    else:
+        raise Exception(f"Unknown prompt type {type(prompt)}")         
     prompt_tok = tokenizer(prompt, return_tensors="pt", padding="max_length", truncation=True, max_length=300, add_special_tokens=True).to(text_encoder.device)
     with torch.no_grad():
         prompt_encoded=text_encoder(**prompt_tok)
     return prompt_encoded.last_hidden_state, prompt_tok.attention_mask
+
 
 def load_imagenet_labels():
     raw_url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
