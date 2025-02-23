@@ -93,7 +93,7 @@ def pil_add_text(image, text, position=None, font_size=None, font_color=(255, 25
             font_path = "DejaVuSans.ttf"
     w, h = image.size
     if position is None: position = (w//10, h//10)
-    if font_size is None: font_size = round(h*0.1)
+    if font_size is None: font_size = round(h*0.2)
     img_copy = image.copy()
     draw = ImageDraw.Draw(img_copy)
     font = ImageFont.truetype(font_path, font_size)
