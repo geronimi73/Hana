@@ -33,7 +33,6 @@ from utils import (
     pil_clipscore, 
     free_memory, 
     get_rnd_sigmas,
-    linear_multistep_coeff,
     get_sigma_schedule,
 )
 
@@ -91,7 +90,7 @@ model_config = SimpleNamespace(
 )
 
 data_config = SimpleNamespace(
-    dataset = "g-ronimo/IN1k-96-latents_dc-ae-f32c32-sana-1.0",
+    dataset = "g-ronimo/IN1k96-augmented-latents_dc-ae-f32c32-sana-1.0",
     col_label = "label",
     col_latent = "latent",
     split_train = "train",
@@ -102,7 +101,7 @@ data_config = SimpleNamespace(
 train_config = SimpleNamespace(
     lr = 5e-4,
     bs = 1024,
-    epochs = 100,
+    epochs = 300,
     steps_log = 10,
     steps_eval = 300,
     timesteps_training = 1000,
@@ -121,6 +120,10 @@ eval_config = SimpleNamespace(
         "a blonde girl",
         "a red car",
         "a blue car",
+        "a cheeseburger on a white plate", 
+        "a bunch of bananas on a wooden table", 
+        "a white tea pot on a wooden table", 
+        "an erupting volcano with lava pouring out",
     ],
     seeds = [6945, 4009, 1479, 8141, 3441], # seeds for latent generation
     inference_config = dict(
@@ -135,7 +138,10 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class ImageNet96Dataset(torch.utils.data.Dataset):
-    def __init__(self, hf_ds, text_enc, tokenizer, bs, ddp, col_label="label", col_latent="latent"):
+    
+    def __init__(
+        self, hf_ds, text_enc, tokenizer, bs, ddp, col_label="label", col_latent="latent"
+    ):
         self.hf_ds=hf_ds
         self.col_label, self.col_latent = col_label, col_latent
         self.text_enc, self.tokenizer =  text_enc, tokenizer
@@ -149,14 +155,18 @@ class ImageNet96Dataset(torch.utils.data.Dataset):
         self.dataloader = DataLoader(
             hf_ds, sampler=self.sampler, collate_fn=self.collate, batch_size=bs, num_workers=4, prefetch_factor=2
         )
-
+    
     def collate(self, items):
         labels = [i[self.col_label] for i in items]
-        # [B, 32, 3, 3]
-        latents = torch.Tensor([i[self.col_latent] for i in items]).squeeze()
-        # # pick random augmentation -> [B, num_aug, 32, 3, 2]
-        # latents = latents[:, random.randint(0,3)].to(dtype)
-        
+        # latents shape [B, num_aug, 32, 3, 3]
+        latents = torch.Tensor([i[self.col_latent] for i in items])
+        B, num_aug, _, _, _ = latents.shape
+
+        # pick random augmentation -> latents shape [B, 32, 3, 3]
+        aug_idx = torch.randint(0, num_aug, (B,))  # Random int between 0-4 for each batch item
+        batch_idx = torch.arange(B)
+        latents = latents[batch_idx, aug_idx] 
+
         return labels, latents
         
     def __iter__(self):
@@ -291,15 +301,17 @@ for epoch in range(train_config.epochs):
             transformer.train()        
 
         step += 1
-        
-    if ddp: transformer.module.save_pretrained(f"cp-e{epoch}")
-    else: transformer.save_pretrained(f"cp-e{epoch}")
+    
+    if ddp: torch.distributed.barrier()  # sync before save? don't know, let's be safe
+    if is_master:
+        if ddp: transformer.module.save_pretrained(f"cp-e{epoch}")
+        else: transformer.save_pretrained(f"cp-e{epoch}")
 
 # %% train.ipynb 14
 if ddp: torch.distributed.barrier()
 
 if is_master:
     wandb.finish()
-    transformer.module.push_to_hub(f"g-ronimo/hana-alpha28")
+    transformer.module.push_to_hub(f"g-ronimo/hana-alpha29")
 
 if ddp: dist.destroy_process_group()

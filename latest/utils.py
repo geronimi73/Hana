@@ -55,13 +55,13 @@ def generate(
     assert guidance_scale is None or neg_prompt is not None, "Neg. prompt has to be specified with CFG"
     
     do_cfg = guidance_scale is not None
-    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(transformer.dtype).to(transformer.device)
+    latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(dcae.dtype).to(dcae.device)
     sigmas, timesteps = get_sigma_schedule(num_steps)
     
     prompt_encoded, prompt_atnmask = encode_prompt([prompt, neg_prompt] if do_cfg else prompt, tokenizer, text_encoder)
     
     for t, sigma_prev, sigma_next in zip(timesteps, sigmas[:-1], sigmas[1:]):
-        t = t[None].to(transformer.dtype).to(transformer.device)
+        t = t[None].to(dcae.dtype).to(dcae.device)
         with torch.no_grad():
             noise_pred = transformer(
                 torch.cat([latent] * 2) if do_cfg else latent, 
@@ -76,7 +76,7 @@ def generate(
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
         
         latent = latent + (sigma_next - sigma_prev) * noise_pred 
-    return latent_to_PIL(latent / dcae_scalingf, dcae).resize((512, 512))
+    return latent_to_PIL(latent / dcae_scalingf, dcae)
 
 
 # source: https://github.com/crowsonkb/k-diffusion/blob/8018de0b43da8d66617f3ef10d3f2a41c1d78836/k_diffusion/sampling.py#L261
