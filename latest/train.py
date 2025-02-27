@@ -5,7 +5,7 @@ __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_conf
            'text_encoder', 'tokenizer', 'dcae', 'ds', 'dataloader_train', 'dataloader_eval', 'optimizer', 'wandb_run',
            'steps_epoch', 'step', 'last_step_time', 'load_models', 'add_random_noise', 'eval_loss', 'ImageNet96Dataset']
 
-# %% train.ipynb 4
+# %% train.ipynb 3
 import torch, torch.nn.functional as F, random, wandb, time
 import torchvision.transforms as T
 from torchvision import transforms
@@ -39,7 +39,7 @@ from utils import (
 seed = 42
 set_seed(seed)
 
-# %% train.ipynb 5
+# %% train.ipynb 4
 def load_models(text_encoder, transformer_config, ae, dtype, device):
     transformer = SanaTransformer2DModel.from_config(transformer_config).to(device).to(dtype)
     te = AutoModel.from_pretrained(text_encoder, torch_dtype=dtype).to(device)
@@ -77,7 +77,7 @@ def eval_loss(dataloader_eval, testing=False):
         if testing: break
     return sum(losses)/len(losses)
 
-# %% train.ipynb 6
+# %% train.ipynb 5
 dtype = torch.bfloat16
 device = "cuda" 
 debug = True
@@ -90,20 +90,22 @@ model_config = SimpleNamespace(
 )
 
 data_config = SimpleNamespace(
-    dataset = "g-ronimo/IN1k96-augmented-latents_dc-ae-f32c32-sana-1.0",
+    dataset = "g-ronimo/IN1k-128-latents_dc-ae-f32c32-sana-1.0",
     col_label = "label",
     col_latent = "latent",
     split_train = "train",
     split_eval = "test",
-    latent_shape = [1, 32, 3, 3]
+    latent_shape = [1, 32, 4, 4]
 )
 
 train_config = SimpleNamespace(
     lr = 5e-4,
+    # bs = 768,
     bs = 1024,
-    epochs = 300,
+    epochs = 200,
     steps_log = 10,
     steps_eval = 300,
+    epochs_save = 5,
     timesteps_training = 1000,
     sigma_sampling = "normal",  # beta uniform normal
     log_wandb = True,
@@ -133,7 +135,7 @@ eval_config = SimpleNamespace(
     )
 )
 
-# %% train.ipynb 7
+# %% train.ipynb 6
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -186,7 +188,7 @@ class ImageNet96Dataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.dataloader)
 
-# %% train.ipynb 9
+# %% train.ipynb 8
 if ddp:
     dist.init_process_group(backend='nccl')
     is_master = dist.get_rank() == 0  
@@ -237,7 +239,7 @@ steps_epoch = len(dataloader_train)
 if is_master: 
     print(f"steps per epoch: {steps_epoch}")
 
-# %% train.ipynb 13
+# %% train.ipynb 12
 free_memory()
 
 if is_master and train_config.log_wandb: 
@@ -303,15 +305,15 @@ for epoch in range(train_config.epochs):
         step += 1
     
     if ddp: torch.distributed.barrier()  # sync before save? don't know, let's be safe
-    if is_master:
+    if is_master and epoch % train_config.epochs_save == 0:
         if ddp: transformer.module.save_pretrained(f"cp-e{epoch}")
         else: transformer.save_pretrained(f"cp-e{epoch}")
 
-# %% train.ipynb 14
+# %% train.ipynb 13
 if ddp: torch.distributed.barrier()
 
 if is_master:
     wandb.finish()
-    transformer.module.push_to_hub(f"g-ronimo/hana-alpha29")
+    transformer.module.push_to_hub(f"g-ronimo/hana-alpha30")
 
 if ddp: dist.destroy_process_group()
