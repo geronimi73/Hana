@@ -5,6 +5,35 @@ from PIL import PngImagePlugin
 # otherwise might lead to Decompressed Data Too Large for some images
 LARGE_ENOUGH_NUMBER = 10
 PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
+import fcntl
+import os
+import time
+
+LOCK_FILE_PATH = 'lock_file.lock'
+
+def acquire_lock():
+    # Open the lock file in write mode
+    lock_file = open(LOCK_FILE_PATH, 'w')
+
+    # Try to acquire an exclusive lock on the file
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # print("Lock acquired.")
+        return lock_file
+    except IOError as e:
+        # If the lock is already held by another process, wait and retry
+        # print("Lock is held by another process. Waiting...")
+        time.sleep(4)
+        return acquire_lock()
+
+def release_lock(lock_file):
+    # Release the lock and close the file
+    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    lock_file.close()
+    # print("Lock released.")
+
+    # Remove the lock file
+    os.remove(LOCK_FILE_PATH)
 
 ## For example
 ASPECT_RATIOS = [

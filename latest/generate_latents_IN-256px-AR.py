@@ -1,12 +1,13 @@
 import torch
 import torch.distributed as dist
 import random
+import time
 import os
 from datasets import load_dataset, Dataset, DatasetDict
 from diffusers import AutoencoderDC
 from tqdm import tqdm
 from utils import make_grid, PIL_to_latent, latent_to_PIL, pil_add_text
-from utils_preprocess import resize, pad
+from utils_preprocess import resize, pad, acquire_lock, release_lock
 
 def process_dcae_batch(batch, dcae):
     labels = batch["labels"]
@@ -50,6 +51,9 @@ def process(rank, is_master, world_size, batch_size=8):
 		dcae_batches = {}   # buffer, collect samples and batch process when full
 		samples_uploaded = 0
 
+		if test_run:
+			ds[split] = ds[split].select(range(1_000))
+
 		# Poor man's distributed dataloader
 		indices = list(range(len(ds[split])))  # all ranks
 		indices = indices[rank : len(indices) : world_size] # subsample for current rank
@@ -82,7 +86,7 @@ def process(rank, is_master, world_size, batch_size=8):
 					(len(dcae_batches[ar_bucket]["labels"]) >= dcae_batch_size)
 					or 
 					# batch is not full but we reached end of dataset -> process
-					(i == len(ds[split])-1 and len(dcae_batches[ar_bucket]["labels"]) > 0)
+					(idx == indices[-1] and len(dcae_batches[ar_bucket]["labels"]) > 0)
 				):
 					if target_split not in dataset_list: 
 						dataset_list[target_split] = []
@@ -94,7 +98,6 @@ def process(rank, is_master, world_size, batch_size=8):
 
 					# debug: save the images of the first processed batch
 					if not zerobatch_saved:
-						print("saving zerobatch")
 						make_grid(
 							[
 								pil_add_text(
@@ -115,21 +118,31 @@ def process(rank, is_master, world_size, batch_size=8):
 					(len(dataset_list[target_split]) >= upload_every)
 					or 
 					# reached end of dataset -> upload
-					(i == len(ds[split])-1 and len(dataset_list[target_split]) > 0)
+					(idx == indices[-1] and len(dataset_list[target_split]) > 0)
 				):
 					if target_split not in parts_uploaded: 
 						parts_uploaded[target_split]=0
+					# try to not upload at exactly the same time to the hub
+					# time.sleep(random.randint(1, 10))
+					lock_file = acquire_lock()
+					print(f"Lock acquired by rank {rank}")
 					Dataset.from_list(dataset_list[target_split]).push_to_hub(
 						hf_dataset, 
+						revision="main",
+						commit_message=f"worker_{rank}.{target_split}.part_{parts_uploaded[target_split]}", 
 						split=f"{target_split}.worker_{rank}.part_{parts_uploaded[target_split]}", 
 						num_shards=1
 					)
+					release_lock(lock_file)
+					print(f"Lock released by rank {rank}")
+
 					parts_uploaded[target_split]+=1
 					samples_uploaded += len(dataset_list[target_split])
 					print(f"Rank {rank} uploaded",len(dataset_list[target_split]), "samples of split", target_split, "part", parts_uploaded[target_split])
 					dataset_list[target_split]=[]   
+					time.sleep(1) # don't enter loop immediately, let the others play too
 
-		print("split", split, "total samples uploaded:", samples_uploaded)
+		print(f"split {split}, rank{rank}: total samples uploaded:", samples_uploaded)
 
 if __name__ == '__main__':
 	ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
