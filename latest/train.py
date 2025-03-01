@@ -3,7 +3,8 @@
 # %% auto 0
 __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_config', 'train_config', 'eval_config', 'transformer',
            'text_encoder', 'tokenizer', 'dcae', 'ds', 'dataloader_train', 'dataloader_eval', 'optimizer', 'wandb_run',
-           'steps_epoch', 'step', 'last_step_time', 'load_models', 'add_random_noise', 'eval_loss', 'ImageNet96Dataset']
+           'steps_epoch', 'step', 'last_step_time', 'load_models', 'add_random_noise', 'eval_loss',
+           'ImageNet96ARDataset']
 
 # %% train.ipynb 3
 import torch, torch.nn.functional as F, random, wandb, time
@@ -90,19 +91,17 @@ model_config = SimpleNamespace(
 )
 
 data_config = SimpleNamespace(
-    dataset = "g-ronimo/IN1k-128-latents_dc-ae-f32c32-sana-1.0",
+    dataset = "g-ronimo/IN1k128-AR-buckets-latents_dc-ae-f32c32-sana-1.0",
     col_label = "label",
     col_latent = "latent",
-    split_train = "train",
-    split_eval = "test",
-    latent_shape = [1, 32, 4, 4]
+    splits_train = ["train_AR_1_to_1", "train_AR_3_to_4", "train_AR_4_to_3"],
+    splits_eval = ["validation_AR_1_to_1", "validation_AR_3_to_4", "validation_AR_4_to_3"],
 )
 
 train_config = SimpleNamespace(
     lr = 5e-4,
-    # bs = 768,
-    bs = 1024,
-    epochs = 200,
+    bs = 832,
+    epochs = 100,
     steps_log = 10,
     steps_eval = 300,
     epochs_save = 5,
@@ -131,7 +130,7 @@ eval_config = SimpleNamespace(
     inference_config = dict(
         num_steps = 20, 
         guidance_scale = 2,
-        latent_dim = data_config.latent_shape
+        latent_dim = [1, 32, 4, 4]  # 128x128px
     )
 )
 
@@ -139,43 +138,35 @@ eval_config = SimpleNamespace(
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-class ImageNet96Dataset(torch.utils.data.Dataset):
-    
+class ImageNet96ARDataset(torch.utils.data.Dataset):
     def __init__(
-        self, hf_ds, text_enc, tokenizer, bs, ddp, col_label="label", col_latent="latent"
+        self, hf_dataset, splits, text_enc, tokenizer, bs, ddp=False, col_label="label", col_latent="latent"
     ):
-        self.hf_ds=hf_ds
+        self.hf_dataset = hf_dataset
+        self.splits = splits  # each split is one aspect ratio
         self.col_label, self.col_latent = col_label, col_latent
         self.text_enc, self.tokenizer =  text_enc, tokenizer
         self.tokenizer.padding_side = "right"
         self.prompt_len = 50
-        
-        if ddp: 
-            self.sampler = DistributedSampler(hf_ds, shuffle = True, seed = seed)
-        else: 
-            self.sampler = RandomSampler(hf_ds, generator = torch.manual_seed(seed))
-        self.dataloader = DataLoader(
-            hf_ds, sampler=self.sampler, collate_fn=self.collate, batch_size=bs, num_workers=4, prefetch_factor=2
-        )
-    
+
+        # Create a dataloader for each split (=aspect ratio)
+        self.dataloaders = {}
+        self.samplers = {}
+        for split in splits:
+            if ddp: 
+                self.samplers[split] = DistributedSampler(hf_dataset[split], shuffle=True, seed=seed)
+            else: 
+                self.samplers[split] = RandomSampler(hf_dataset[split], generator=torch.manual_seed(seed))
+            self.dataloaders[split] = DataLoader(
+                hf_dataset[split], sampler=self.samplers[split], collate_fn=self.collate, batch_size=bs, num_workers=4, prefetch_factor=2
+            )
+
     def collate(self, items):
         labels = [i[self.col_label] for i in items]
-        # latents shape [B, num_aug, 32, 3, 3]
-        latents = torch.Tensor([i[self.col_latent] for i in items])
-        B, num_aug, _, _, _ = latents.shape
-
-        # pick random augmentation -> latents shape [B, 32, 3, 3]
-        aug_idx = torch.randint(0, num_aug, (B,))  # Random int between 0-4 for each batch item
-        batch_idx = torch.arange(B)
-        latents = latents[batch_idx, aug_idx] 
+        # latents shape [B, 1, 32, W, H] -> squeeze [B, 32, W, H]
+        latents = torch.Tensor([i[self.col_latent] for i in items]).squeeze()
 
         return labels, latents
-        
-    def __iter__(self):
-        for labels, latents in self.dataloader:
-            label_embs, label_atnmasks = self.encode_prompts(labels)
-            latents = latents.to(dtype).to(device)
-            yield labels, latents, label_embs, label_atnmasks
     
     def encode_prompts(self, prompts):
         prompts_tok = self.tokenizer(
@@ -185,8 +176,31 @@ class ImageNet96Dataset(torch.utils.data.Dataset):
             prompts_encoded = self.text_enc(**prompts_tok.to(self.text_enc.device))
         return prompts_encoded.last_hidden_state, prompts_tok.attention_mask
 
-    def __len__(self):
-        return len(self.dataloader)
+    def __iter__(self):
+        # Reset iterators at the beginning of each epoch
+        iterators = { split: iter(dataloader) for split, dataloader in self.dataloaders.items() }
+        active_dataloaders = set(self.splits)  # Track exhausted dataloaders
+        current_split_index = -1
+        
+        while active_dataloaders:
+            # Round robin: change split on every iteration (=after every batch OR after we unsucc. tried to get a batch) 
+            current_split_index = (current_split_index + 1) % len(self.splits)
+            split = self.splits[current_split_index]
+
+            # Skip if this dataloader is exhausted
+            if split not in active_dataloaders: continue
+            
+            # Try to get the next batch
+            try:
+                labels, latents = next(iterators[split]) 
+                label_embs, label_atnmasks = self.encode_prompts(labels)
+                latents = latents.to(dtype).to(device)
+                yield labels, latents, label_embs, label_atnmasks
+            # dataloader is exhausted
+            except StopIteration: active_dataloaders.remove(split)
+
+    def set_epoch(self, epoch):
+        for split in self.splits: self.samplers[split].set_epoch(epoch)
 
 # %% train.ipynb 8
 if ddp:
@@ -214,12 +228,12 @@ if ddp:
     
 ds = load_dataset(data_config.dataset)
 
-dataloader_train = ImageNet96Dataset(
-    ds[data_config.split_train], text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=ddp
+dataloader_train = ImageNet96ARDataset(
+    ds, splits=data_config.splits_train, text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=ddp
 )
-dataloader_eval = ImageNet96Dataset(
+dataloader_eval = ImageNet96ARDataset(
     # ddp = false, we want a random sampler, not the distributed samples, in any case
-    ds[data_config.split_eval], text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=False
+    ds, splits=data_config.splits_eval, text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=False
 )
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=train_config.lr)
@@ -235,7 +249,7 @@ wandb_run = train_config.wandb_run.format(
     ws=world_size,
 )
 
-steps_epoch = len(dataloader_train)
+steps_epoch = sum([len(ds[split]) for split in data_config.splits_train]) // (train_config.bs * world_size)
 if is_master: 
     print(f"steps per epoch: {steps_epoch}")
 
@@ -254,7 +268,7 @@ last_step_time = time.time()
 free_memory()
 
 for epoch in range(train_config.epochs):
-    if ddp: dataloader_train.sampler.set_epoch(epoch)
+    if ddp: dataloader_train.set_epoch(epoch)
     
     for labels, latents, prompts_encoded, prompts_atnmask in dataloader_train:
         latents = latents * dcae_scalingf
@@ -314,6 +328,6 @@ if ddp: torch.distributed.barrier()
 
 if is_master:
     wandb.finish()
-    transformer.module.push_to_hub(f"g-ronimo/hana-alpha30")
+    transformer.module.push_to_hub(f"g-ronimo/hana-alpha31")
 
 if ddp: dist.destroy_process_group()
