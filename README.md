@@ -3,9 +3,8 @@
 
 I have no idea what I am doing and that's why I do it
 
-
 <div align="center" border-radius="10px">
-  <img src="assets/hana_logo_small.png" width="60%"/>
+  <img src="assets/alpha32_e85_output.gif" width="50%"/>
 </div>
 
 ## WIP 
