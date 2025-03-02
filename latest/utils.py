@@ -50,17 +50,20 @@ def generate(
     latent_dim=None, 
     num_steps=100, 
     latent_seed=None,
+    flow_shift=1.0,
+    return_xps=False
     ):
     
     assert guidance_scale is None or neg_prompt is not None, "Neg. prompt has to be specified with CFG"
     
     do_cfg = guidance_scale is not None
     latent = torch.randn(latent_dim, generator=torch.manual_seed(latent_seed) if latent_seed else None).to(dcae.dtype).to(dcae.device)
-    sigmas, timesteps = get_sigma_schedule(num_steps)
+    sigmas, timesteps = get_sigma_schedule(num_steps, flow_shift=flow_shift)
+    xps = []
     
     prompt_encoded, prompt_atnmask = encode_prompt([prompt, neg_prompt] if do_cfg else prompt, tokenizer, text_encoder)
     
-    for t, sigma_prev, sigma_next in zip(timesteps, sigmas[:-1], sigmas[1:]):
+    for t, sigma_prev, sigma_next, steps_left in zip(timesteps, sigmas[:-1], sigmas[1:], range(num_steps, 0, -1)):
         t = t[None].to(dcae.dtype).to(dcae.device)
         with torch.no_grad():
             noise_pred = transformer(
@@ -74,9 +77,15 @@ def generate(
         if do_cfg:
             noise_pred_cond, noise_pred_uncond = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-        
+
+        if return_xps:
+            x0 = latent + steps_left * (sigma_next - sigma_prev) * noise_pred 
+            xps.append(x0)
         latent = latent + (sigma_next - sigma_prev) * noise_pred 
-    return latent_to_PIL(latent / dcae_scalingf, dcae)
+    if return_xps:
+        return latent_to_PIL(latent / dcae_scalingf, dcae), latent_to_PIL(torch.cat([x0 / dcae_scalingf for x0 in xps]), dcae)
+    else:
+        return latent_to_PIL(latent / dcae_scalingf, dcae)
 
 
 # source: https://github.com/crowsonkb/k-diffusion/blob/8018de0b43da8d66617f3ef10d3f2a41c1d78836/k_diffusion/sampling.py#L261
