@@ -1,5 +1,5 @@
 # Hana
-~~A [Sana](https://nvlabs.github.io/Sana/)-like diffusion model~~
+~~A [Sana](https://nvlabs.github.io/Sana/)-like text-to-image model trained from scratch~~
 
 I have no idea what I am doing and that's why I do it
 
@@ -7,7 +7,7 @@ I have no idea what I am doing and that's why I do it
   <img src="assets/alpha32_e100_output.gif" width="50%"/>
 </div>
 
-## 💪 Training runs, WIP, unfiltered list, mostly fails
+## 💪 Training runs - WIP, unfiltered list, mostly fails
 
 | Model&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| Text Encoder | AE | Transformer | Dataset&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Compute | Model | Code | Loss&nbsp;&nbsp;&nbsp;&nbsp; | Samples&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |
 | ----------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------| --------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
