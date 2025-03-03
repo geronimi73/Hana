@@ -276,15 +276,17 @@ for epoch in range(train_config.epochs):
     for labels, latents, prompts_encoded, prompts_atnmask in dataloader_train:
         latents = latents * dcae_scalingf
         latents_noisy, noise, t = add_random_noise(latents, dist = train_config.sigma_sampling)
-        noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
-        loss = F.mse_loss(noise_pred, noise - latents)
-        
+        v_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
+        loss = F.mse_loss(v_pred, noise - latents) # flow target
+
+        # Optimizer step
         optimizer.zero_grad()    
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
         optimizer.step()
         lr_scheduler.step()
-        
+
+        # Log step
         if is_master and step>0 and step % train_config.steps_log == 0:
             lr = lr_scheduler.get_last_lr()[0]
             loss_train = loss.item()
@@ -296,6 +298,7 @@ for epoch in range(train_config.epochs):
                 wandb.log({"loss_train": loss_train, "lr": lr, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": sample_count, "epoch": step / steps_epoch})
             last_step_time = time.time()
 
+        # Eval step
         if is_master and step>0 and step % train_config.steps_eval == 0:
             transformer.eval()
             loss_eval = eval_loss(dataloader_eval)
