@@ -2,17 +2,17 @@
 
 # %% auto 0
 __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_config', 'train_config', 'eval_config', 'transformer',
-           'text_encoder', 'tokenizer', 'dcae', 'ds', 'dataloader_train', 'dataloader_eval', 'optimizer', 'wandb_run',
-           'steps_epoch', 'step', 'last_step_time', 'load_models', 'add_random_noise', 'eval_loss',
-           'ImageNet96ARDataset']
+           'text_encoder', 'tokenizer', 'dcae', 'ds', 'dataloader_train', 'dataloader_eval', 'optimizer',
+           'lr_scheduler', 'wandb_run', 'steps_epoch', 'step', 'last_step_time', 'load_models', 'add_random_noise',
+           'eval_loss', 'ImageNet96ARDataset']
 
 # %% train.ipynb 3
-import torch, torch.nn.functional as F, random, wandb, time
-import torchvision.transforms as T
+import torch, torch.nn.functional as F, random, wandb, time, os
+# import torchvision.transforms as T
 from torchvision import transforms
 from diffusers import AutoencoderDC, SanaTransformer2DModel
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from transformers import AutoModel, AutoTokenizer, set_seed
+from transformers import AutoModel, AutoTokenizer, set_seed, get_constant_schedule_with_warmup
 from datasets import load_dataset, Dataset, DatasetDict
 from tqdm import tqdm
 from torch.utils.data import DataLoader, RandomSampler
@@ -28,8 +28,6 @@ from utils import (
     pil_add_text, 
     latent_to_PIL, 
     make_grid, 
-    fmnist_labels, 
-    encode_prompt, 
     dcae_scalingf, 
     pil_clipscore, 
     free_memory, 
@@ -100,8 +98,10 @@ data_config = SimpleNamespace(
 
 train_config = SimpleNamespace(
     lr = 5e-4,
-    bs = 832,
+    bs = 8,
+    # bs = 832,
     epochs = 100,
+    steps_warmup = 10_000,
     steps_log = 10,
     steps_eval = 300,
     epochs_save = 5,
@@ -110,6 +110,7 @@ train_config = SimpleNamespace(
     log_wandb = True,
     wandb_project = "Hana",
     wandb_run = "Sana-DiT-B-{size:.2f}M_{ds}_LR-{lr}_BS-{bs}_{ts_sampling}-TS-{ts}_{ws}x{device}",
+    upload_model_to = "g-ronimo/hana-alpha31"
 )
 
 eval_config = SimpleNamespace(
@@ -232,11 +233,13 @@ dataloader_train = ImageNet96ARDataset(
     ds, splits=data_config.splits_train, text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=ddp
 )
 dataloader_eval = ImageNet96ARDataset(
-    # ddp = false, we want a random sampler, not the distributed samples, in any case
+    # ddp = false, we want a non-distributed sampler for eval which is done on master only
     ds, splits=data_config.splits_eval, text_enc=text_encoder, tokenizer=tokenizer, bs=train_config.bs, ddp=False
 )
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=train_config.lr)
+
+lr_scheduler = get_constant_schedule_with_warmup(optimizer, train_config.steps_warmup)
 
 wandb_run = train_config.wandb_run.format(
     size=sum(p.numel() for p in transformer.parameters())/1e6, 
@@ -276,23 +279,24 @@ for epoch in range(train_config.epochs):
         noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
         loss = F.mse_loss(noise_pred, noise - latents)
         
+        optimizer.zero_grad()    
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
         optimizer.step()
-        optimizer.zero_grad()    
+        lr_scheduler.step()
         
         if is_master and step>0 and step % train_config.steps_log == 0:
+            lr = lr_scheduler.get_last_lr()[0]
             loss_train = loss.item()
             step_time = (time.time() - last_step_time) / train_config.steps_log * 1000
             sample_count = step * train_config.bs * world_size
             sample_tp = train_config.bs * train_config.steps_log * world_size / (time.time() - last_step_time)
-            print(f"step {step}, epoch: {step / steps_epoch:.2f}, train loss: {loss_train:.4f}, grad_norm: {grad_norm:.2f}, {step_time:.2f}ms/step, {sample_tp:.2f}samples/sec")
+            print(f"step {step}, epoch: {step / steps_epoch:.2f}, train loss: {loss_train:.4f}, grad_norm: {grad_norm:.2f}, lr: {lr:.5f}, {step_time:.2f}ms/step, {sample_tp:.2f}samples/sec")
             if train_config.log_wandb: 
-                wandb.log({"loss_train": loss_train, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": sample_count, "epoch": step / steps_epoch})
+                wandb.log({"loss_train": loss_train, "lr": lr, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": sample_count, "epoch": step / steps_epoch})
             last_step_time = time.time()
 
         if is_master and step>0 and step % train_config.steps_eval == 0:
-                
             transformer.eval()
             loss_eval = eval_loss(dataloader_eval)
             sample_count = step * train_config.bs * world_size
@@ -326,8 +330,8 @@ for epoch in range(train_config.epochs):
 # %% train.ipynb 13
 if ddp: torch.distributed.barrier()
 
-if is_master:
+if is_master and train_config.upload_model_to:
     wandb.finish()
-    transformer.module.push_to_hub(f"g-ronimo/hana-alpha31")
+    transformer.module.push_to_hub(train_config.upload_model_to)
 
 if ddp: dist.destroy_process_group()
