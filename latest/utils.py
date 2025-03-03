@@ -235,7 +235,7 @@ def PIL_to_latent(images, ae):
     transform = T.Compose([
         T.ToTensor(),
         T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        lambda x: x.to(dtype=torch.bfloat16)
+        lambda x: x.to(dtype=ae.dtype)
     ])
 
     if not isinstance(images, (list, tuple)): images = [images]
