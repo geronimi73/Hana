@@ -40,7 +40,7 @@ def find_latest_cp(rank, split, cp_template):
     for file in glob.glob(pattern):
         batch_num = int(cp_regex.match(file).group(1))
         if batch_num>highest_batch_num: highest_batch_num=batch_num
-    assert highest_batch_num != -1
+
     return highest_batch_num
 
 def process(rank, is_master, world_size):
@@ -55,7 +55,7 @@ def process(rank, is_master, world_size):
 	batch_size = 1
 	cp_template = "checkpoints/checkpoint_split-{split}_rank{rank}_batch-{batch_num}.pkl"
 	cp_every = 10_000
-	# start from checkpoint; either None or batch_num
+	# start from latest available checkpoint?
 	start_from_cp = True
 
 	# Load model 
@@ -98,10 +98,13 @@ def process(rank, is_master, world_size):
 
 		if start_from_cp:
 			cp_start = find_latest_cp(rank, split, cp_template)
-			print(f"Rank {rank} loading cp {cp_start} for split {split}")
-			moondream_captions = load_checkpoint(
-				cp_template.format(split=split, rank=rank, batch_num=cp_start)
-			)
+			if cp_start != -1:
+				print(f"Rank {rank} loading cp {cp_start} for split {split}")
+				moondream_captions = load_checkpoint(
+					cp_template.format(split=split, rank=rank, batch_num=cp_start)
+				)
+			else:
+				moondream_captions = dict(image_id=[], caption=[])
 		else:
 			moondream_captions = dict(image_id=[], caption=[])
 
