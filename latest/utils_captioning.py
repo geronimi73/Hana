@@ -2,6 +2,7 @@ import torch, gc
 
 smolvlm_model, smolvlm_processor = None, None
 qwenvlm_model, qwenvlm_processor = None, None
+moondream_model, moondream_tokenizer = None, None
 
 def free_memory():
     gc.collect()
@@ -17,6 +18,9 @@ def free_memory():
 
 def unload_models():
     smolvlm_model, smolvlm_processor = None, None
+    qwenvlm_model, qwenvlm_processor = None, None
+    moondream_model, moondream_tokenizer = None
+
     free_memory()
 
 def load_smolvlm(device="cuda", dtype=torch.bfloat16):
@@ -52,6 +56,40 @@ def load_qwenvlm(device="cuda", dtype=torch.bfloat16):
         ).to(device)
 
     return qwenvlm_model, qwenvlm_processor
+
+def load_moondream(device="cuda", dtype=torch.bfloat16):
+    global moondream_model, moondream_tokenizer
+
+    if moondream_model is None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        repo = "vikhyatk/moondream2"
+        moondream_model = AutoModelForCausalLM.from_pretrained(
+            repo,
+            revision="2025-01-09",
+            trust_remote_code=True,
+        ).to(device)
+        moondream_tokenizer = AutoTokenizer.from_pretrained(repo, revision="2025-01-09")
+
+    return moondream_model, moondream_tokenizer
+
+
+def caption_moondream(img, prompt):
+    model, tokenizer = load_moondream()
+
+    return model.query(img, prompt)["answer"].strip()
+
+def batch_caption_moondream(images, prompts):
+    model, tokenizer = load_moondream()
+
+    captions_md = model.batch_answer(
+        images=images,
+        prompts=prompts,
+        tokenizer=tokenizer,
+    )
+    
+    return [c.strip() for c in captions_md]
+
 
 def caption_qwenvlm(img, prompt):
     from qwen_vl_utils import process_vision_info
