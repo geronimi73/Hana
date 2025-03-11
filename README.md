@@ -4,8 +4,9 @@
 I have no idea what I am doing and that's why I do it
 
 <div align="center" border-radius="10px">
-  <img src="assets/alpha32_e100_output.gif" width="50%"/>
+  <img src="assets/alpha35_e100_output.gif" width="50%"/>
 </div>
+
 
 ## 💪 Training runs - WIP, unfiltered list, mostly fails
 
