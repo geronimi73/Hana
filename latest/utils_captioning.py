@@ -41,24 +41,6 @@ def load_smolvlm(device="cuda", dtype=torch.bfloat16):
 
     return smolvlm_model, smolvlm_processor
 
-def load_qwenvlm(device="cuda", dtype=torch.bfloat16):
-    global qwenvlm_model, qwenvlm_processor
-
-    if qwenvlm_model is None:
-        repo = "Qwen/Qwen2.5-VL-3B-Instruct"
-        print(f"loading {repo}")
-        from transformers import AutoProcessor, AutoModelForImageTextToText
-        
-        qwenvlm_processor = AutoProcessor.from_pretrained(repo)
-        qwenvlm_processor.tokenizer.padding_side="left"     
-        qwenvlm_model = AutoModelForImageTextToText.from_pretrained(
-            repo, 
-            torch_dtype=dtype,
-            _attn_implementation="flash_attention_2"
-        ).to(device)
-
-    return qwenvlm_model, qwenvlm_processor
-
 def load_moondream(device="cuda", dtype=torch.bfloat16):
     global moondream_model, moondream_tokenizer
 
@@ -94,9 +76,26 @@ def batch_caption_moondream(images, prompts):
     return [c.strip() for c in captions_md]
 
 
-def caption_qwenvlm(img, prompt):
+def load_qwenvlm(device="cuda", dtype=torch.bfloat16, repo=None):
+    global qwenvlm_model, qwenvlm_processor
+
+    if qwenvlm_model is None:
+        print(f"loading {repo}")
+        from transformers import AutoProcessor, AutoModelForImageTextToText
+        
+        qwenvlm_processor = AutoProcessor.from_pretrained(repo)
+        qwenvlm_processor.tokenizer.padding_side="left"     
+        qwenvlm_model = AutoModelForImageTextToText.from_pretrained(
+            repo, 
+            torch_dtype=dtype,
+            _attn_implementation="flash_attention_2"
+        ).to(device)
+
+    return qwenvlm_model, qwenvlm_processor
+
+def caption_qwenvlm(img, prompt, repo="Qwen/Qwen2.5-VL-3B-Instruct"):
     from qwen_vl_utils import process_vision_info
-    model, processor = load_qwenvlm()
+    model, processor = load_qwenvlm(repo=repo)
     
     conversation = [ 
         dict(role="user", 
@@ -121,11 +120,11 @@ def caption_qwenvlm(img, prompt):
     output_ids = output_ids[:, inputs["input_ids"].size(1):]
     outputs = processor.batch_decode(output_ids, skip_special_tokens=True)
     
-    return outputs[0].strip().replace("\"","")
+    return outputs[0].replace("\"","").strip()
 
-def batch_caption_qwenvlm(images, prompts):
+def batch_caption_qwenvlm(images, prompts, repo="Qwen/Qwen2.5-VL-3B-Instruct"):
     from qwen_vl_utils import process_vision_info
-    model, processor = load_qwenvlm()
+    model, processor = load_qwenvlm(repo=repo)
     
     conversations = [ 
         [dict(role="user", content=[dict(type="image", image=img),dict(type="text", text=prompt)])]
@@ -150,7 +149,7 @@ def batch_caption_qwenvlm(images, prompts):
 
     generated_texts = processor.batch_decode(output_ids, skip_special_tokens=True)
 
-    return [t.strip() for t in generated_texts]
+    return [t.replace("\"","").strip() for t in generated_texts]
 
 def caption_smolvlm(img, prompt):
     model, processor = load_smolvlm()
