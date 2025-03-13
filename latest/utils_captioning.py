@@ -28,6 +28,7 @@ def load_smolvlm(device="cuda", dtype=torch.bfloat16):
 
     if smolvlm_model is None:
         repo = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+        print(f"loading {repo}")
         from transformers import AutoProcessor, AutoModelForImageTextToText
         
         smolvlm_processor = AutoProcessor.from_pretrained(repo)
@@ -45,6 +46,7 @@ def load_qwenvlm(device="cuda", dtype=torch.bfloat16):
 
     if qwenvlm_model is None:
         repo = "Qwen/Qwen2.5-VL-3B-Instruct"
+        print(f"loading {repo}")
         from transformers import AutoProcessor, AutoModelForImageTextToText
         
         qwenvlm_processor = AutoProcessor.from_pretrained(repo)
@@ -64,6 +66,7 @@ def load_moondream(device="cuda", dtype=torch.bfloat16):
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         repo = "vikhyatk/moondream2"
+        print(f"loading {repo}")
         moondream_model = AutoModelForCausalLM.from_pretrained(
             repo,
             revision="2025-01-09",
