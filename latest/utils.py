@@ -284,6 +284,22 @@ def encode_prompt(prompt, tokenizer, text_encoder):
         prompt_encoded=text_encoder(**prompt_tok)
     return prompt_encoded.last_hidden_state, prompt_tok.attention_mask
 
+# Load  visual-layer/imagenet-1k-vl-enriched recaptioned with moondream2, qwen2.5 vl 7b, and smolvlm2
+# returns a dictionary, key=image id, value is a list of len 3: md2_caption, qwen2_caption, smolvlm2_caption
+def load_imagenet_1k_vl_enriched_recaped():
+    import requests, gzip, json
+    from io import BytesIO
+    
+    # URL of the gzipped JSON file
+    url = "https://huggingface.co/datasets/g-ronimo/imagenet-1k-vl-enriched-recaped/resolve/main/captions.json.gz"
+    
+    # Download the file
+    response = requests.get(url)
+    response.raise_for_status()  # Check if the request was successful
+    
+    with gzip.GzipFile(fileobj=BytesIO(response.content)) as gz:
+        data = json.loads(gz.read().decode('utf-8'))
+    return data
 
 def load_imagenet_labels():
     raw_url = "https://raw.githubusercontent.com/anishathalye/imagenet-simple-labels/master/imagenet-simple-labels.json"
