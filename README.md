@@ -4,7 +4,7 @@
 I have no idea what I am doing and that's why I do it
 
 <div align="center" border-radius="10px">
-  <img src="assets/alpha35_e100_output.gif" width="50%"/>
+  <img src="assets/alpha39_e100_output.gif" width="50%"/>
   <p style="font-style: italic; color: #666;">Alpha-35 samples</p>
 </div>
 
