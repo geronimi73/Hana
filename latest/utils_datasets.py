@@ -24,23 +24,34 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         if ddp: self.sampler = DistributedSampler(hf_dataset, shuffle=True, seed=seed)
         else: self.sampler = RandomSampler(hf_dataset, generator=torch.manual_seed(seed))
 
+        # preload samples with DataLoader, because accessing the hf dataset is expensive (90% of time spent in formatting.py:144(extract_row))
+        self.dataloader = DataLoader(
+            hf_dataset, sampler=self.sampler, collate_fn=lambda x: x, batch_size=bs*2, 
+            # num_workers=1, # prefetch_factor=10
+        )
+    
     def encode_prompts(self, prompts): return prompts
 
     def __iter__(self):
         samples_by_shape = {}
-        
-        for sample_idx in self.sampler:
-            sample = self.hf_dataset[sample_idx]
-            shape = tuple(sample[self.col_latentshape])
 
-            # group items by shape
-            if not shape in samples_by_shape: samples_by_shape[shape] = []
-            samples_by_shape[shape].append(sample)
-
-            # once we have enough items of a given shape -> collate and yield a batch
-            if len(samples_by_shape[shape]) == self.bs: 
-                yield self.prepare_batch(samples_by_shape[shape], shape)
-                samples_by_shape[shape] = []
+        # get a batch
+        for idx, samples in enumerate(self.dataloader):
+            for sample in samples:
+                shape = tuple(sample[self.col_latentshape])
+    
+                # group samples by shape
+                if not shape in samples_by_shape: samples_by_shape[shape] = []
+                samples_by_shape[shape].append(sample)
+    
+                # once we have enough items of a given shape -> collate and yield a batch
+                if len(samples_by_shape[shape]) == self.bs: 
+                    yield self.prepare_batch(samples_by_shape[shape], shape)
+                    del samples_by_shape[shape] 
+            # yield the remains
+            if (idx+1) == len(self.dataloader):
+                for shape in samples_by_shape:
+                    yield self.prepare_batch(samples_by_shape[shape], shape)
                 
     def prepare_batch(self, items, shape):
         latent_shape = [len(items)]+list(shape)
@@ -48,6 +59,9 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         latents = torch.Tensor([item[self.col_latent] for item in items]).reshape(latent_shape)
 
         return labels, latents
-    
+
+    def __len__(self): return len(self.hf_dataset)
+
     def set_epoch(self, epoch):
         self.sampler.set_epoch(epoch)
+
