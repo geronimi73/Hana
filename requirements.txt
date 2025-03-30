@@ -1,0 +1,11 @@
+transformers 
+matplotlib 
+scipy 
+nbdev 
+fastcore 
+accelerate 
+datasets 
+diffusers 
+Pillow==9.4.0 
+torchmetrics 
+wandb
