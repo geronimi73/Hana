@@ -6,3 +6,5 @@ local_secrets.py
 .DS_Store
 /1Papers
 /notes/2025-03-03_VAE-test/.ipynb_checkpoints
+.*
+__*
