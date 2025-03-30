@@ -7,22 +7,22 @@ __all__ = ['seed', 'dtype', 'device', 'debug', 'ddp', 'model_config', 'data_conf
            'ImageNet96ARDataset']
 
 # %% train.ipynb 3
-import torch, torch.nn.functional as F, random, wandb, time, contextlib
+import torch, torch.nn.functional as F, random, wandb, time
 import torchvision.transforms as T
-import torch.distributed as dist
-import bitsandbytes as bnb
 from torchvision import transforms
-from torch.utils.data import DataLoader, RandomSampler
-from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel
 from diffusers import AutoencoderDC, SanaTransformer2DModel
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from transformers import AutoModel, AutoTokenizer, set_seed, Siglip2TextModel
 from datasets import load_dataset, Dataset, DatasetDict
 from tqdm import tqdm
+from torch.utils.data import DataLoader, RandomSampler
 from functools import partial
 from types import SimpleNamespace
-from statistics import mean
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
+
+import bitsandbytes as bnb
 
 from utils import (
     generate,
@@ -56,8 +56,9 @@ def load_models(text_encoder, transformer_config, ae, dtype, device):
     return transformer, te, tok, dcae
 
 def add_random_noise(latents, dist, timesteps=1000):
+    bs = latents.size(0)
     noise = torch.randn_like(latents)
-    sigmas = get_rnd_sigmas(latents.size(0), dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
+    sigmas = get_rnd_sigmas(bs, dist=dist).to(latents.device)  # floats 0-1 of dist specified in train_config
     timesteps = (sigmas * timesteps).to(latents.device)   # yes, `timesteps = sigmas * 1000`, let's keep it simple
     sigmas = sigmas.view([latents.size(0), *([1] * len(latents.shape[1:]))])
     
@@ -100,20 +101,17 @@ data_config = SimpleNamespace(
 )
 
 train_config = SimpleNamespace(
-    version="alpha42",
-    lr=5e-4,
-    bs=64,
-    gradient_accumulation_steps = 4,
+    lr = 5e-4,
+    bs = 256,
     epochs = 100,
     steps_log = 10,
     steps_eval = 1300,
     epochs_save = 1,
     timesteps_training = 1000,
     sigma_sampling = "normal",  # beta uniform normal
-    grad_checkpointing = False,
     log_wandb = True,
     wandb_project = "Hana",
-    wandb_run = "{version}-{size:.2f}M_LR-{lr}_BS-{bs}_GAS-{gas}_{ws}x{device}",
+    wandb_run = "Sana-DiT-XL-{size:.2f}M_{ds}_LR-{lr}_BS-{bs}_{ts_sampling}-TS-{ts}_{ws}x{device}",
 )
 
 eval_config = SimpleNamespace(
@@ -163,13 +161,13 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
                 self.samplers[split] = DistributedSampler(hf_dataset[split], shuffle=True, seed=seed)
             else: 
                 self.samplers[split] = RandomSampler(hf_dataset[split], generator=torch.manual_seed(seed))
-
             self.dataloaders[split] = DataLoader(
-                hf_dataset[split], sampler=self.samplers[split], collate_fn=self.collate, batch_size=bs, 
-                num_workers=4, prefetch_factor=2
+                hf_dataset[split], sampler=self.samplers[split], collate_fn=self.collate, batch_size=bs, num_workers=4, prefetch_factor=2
             )
 
     def collate(self, items):
+        # i[self.col_label][0] is BLIP2, i[self.col_label][1] is moondream2
+        # labels = [i[self.col_label][2] for i in items]
         labels = [
             # random pick between md2, qwen2 and smolvlm
             in1k_recaps[i[self.col_id]][random.randint(0, 2)]
@@ -187,9 +185,6 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
         with torch.no_grad():
             prompts_encoded = self.text_enc(**prompts_tok.to(self.text_enc.device))
         return prompts_encoded.last_hidden_state, prompts_tok.attention_mask
-
-    def __len__(self):
-        return sum([len(self.dataloaders[split]) for split in self.splits])
 
     def __iter__(self):
         # Reset iterators at the beginning of each epoch
@@ -238,12 +233,7 @@ transformer, text_encoder, tokenizer, dcae = load_models(
     dtype = dtype,
     device = device
 )
-
-if "SmolLM2" in model_config.text_encoder:
-    tokenizer.pad_token = tokenizer.eos_token
-
-if train_config.grad_checkpointing:
-    transformer.enable_gradient_checkpointing()
+transformer.enable_gradient_checkpointing()
 
 if ddp:
 	transformer = DistributedDataParallel(transformer, device_ids=[local_rank])
@@ -262,18 +252,23 @@ dataloader_eval = ImageNet96ARDataset(
 optimizer = bnb.optim.AdamW8bit(transformer.parameters(), lr=train_config.lr)
 
 wandb_run = train_config.wandb_run.format(
-    version=train_config.version,
     size=sum(p.numel() for p in transformer.parameters())/1e6, 
     lr=train_config.lr, 
     bs=train_config.bs, 
-    gas=train_config.gradient_accumulation_steps,
-    ws=world_size,
+    ts=train_config.timesteps_training,
+    ts_sampling=train_config.sigma_sampling.upper(),
     device=device,
+    ds=data_config.dataset.split("/")[1].split("-")[0],
+    ws=world_size,
 )
 
-steps_epoch = sum([len(ds[split]) for split in data_config.splits_train]) // (train_config.bs * train_config.gradient_accumulation_steps * world_size)
+steps_epoch = sum([len(ds[split]) for split in data_config.splits_train]) // (train_config.bs * world_size)
 if is_master: 
     print(f"steps per epoch: {steps_epoch}")
+
+# %% train.ipynb 9
+### UGLY
+tokenizer.pad_token = tokenizer.eos_token
 
 # %% train.ipynb 13
 free_memory()
@@ -285,86 +280,60 @@ if is_master and train_config.log_wandb:
         name=wandb_run
     ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
+step = 0
 last_step_time = time.time()
-step, step_loss, sample_count, last_sample_count = 0, 0, 0, 0
-time_dataload, time_dataload_start = 0, time.time()
 free_memory()
 
 for epoch in range(train_config.epochs):
     if ddp: dataloader_train.set_epoch(epoch)
-    accumulation_step = 0
     
-    for batch_idx, (labels, latents, prompts_encoded, prompts_atnmask) in enumerate(dataloader_train):  
-        accumulation_step += 1
-        time_dataload += time.time() - time_dataload_start
-
-        if ddp and train_config.gradient_accumulation_steps > 1 and accumulation_step % train_config.gradient_accumulation_steps != 0:
-            context = transformer.no_sync()
-        else:
-            context = contextlib.nullcontext()
-
+    for labels, latents, prompts_encoded, prompts_atnmask in dataloader_train:
         latents = latents * dcae_scalingf
         latents_noisy, noise, t = add_random_noise(latents, dist = train_config.sigma_sampling)
+        noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
+        loss = F.mse_loss(noise_pred, noise - latents)
+        
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad()    
+        
+        if is_master and step>0 and step % train_config.steps_log == 0:
+            loss_train = loss.item()
+            step_time = (time.time() - last_step_time) / train_config.steps_log * 1000
+            sample_count = step * train_config.bs * world_size
+            sample_tp = train_config.bs * train_config.steps_log * world_size / (time.time() - last_step_time)
+            print(f"step {step}, epoch: {step / steps_epoch:.2f}, train loss: {loss_train:.4f}, grad_norm: {grad_norm:.2f}, {step_time:.2f}ms/step, {sample_tp:.2f}samples/sec")
+            if train_config.log_wandb: 
+                wandb.log({"loss_train": loss_train, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": sample_count, "epoch": step / steps_epoch})
+            last_step_time = time.time()
 
-        with context:
-            noise_pred = transformer(latents_noisy.to(dtype), prompts_encoded, t, prompts_atnmask).sample
-            loss = F.mse_loss(noise_pred, noise - latents)        
-            loss = loss / train_config.gradient_accumulation_steps
-            loss.backward()
+        if is_master and step>0 and step % train_config.steps_eval == 0:
+                
+            transformer.eval()
+            loss_eval = eval_loss(dataloader_eval)
+            sample_count = step * train_config.bs * world_size
 
-            step_loss += loss.cpu().detach().item() 
-            sample_count += len(labels)
+            # try different seeds for generating eval images
+            images_eval = [
+                generate(
+                    p, transformer, tokenizer, text_encoder, dcae, latent_seed=seed, **eval_config.inference_config
+                ) 
+                for seed in tqdm(eval_config.seeds, "eval_images")
+                for p in eval_config.prompts
+            ]
+            clipscore = pil_clipscore(images_eval, eval_config.prompts * len(eval_config.seeds))
+            # add labels before logging the images
+            images_eval = make_grid([
+                pil_add_text(img, eval_config.prompts[i % len(eval_config.prompts)]) 
+                for i, img in enumerate(images_eval)
+            ], rows=len(eval_config.seeds), cols=len(eval_config.prompts))
+            print(f"step {step}, eval loss: {loss_eval:.4f}, clipscore: {clipscore:.2f}")
+            if train_config.log_wandb: 
+                wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(images_eval), "step": step, "sample_count": sample_count, "epoch": step / steps_epoch})
+            transformer.train()        
 
-        if (accumulation_step % train_config.gradient_accumulation_steps == 0) or (accumulation_step==len(dataloader_train)):
-            grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad()
-
-            step += 1
-
-            # Log step
-            if is_master and step>0 and step % train_config.steps_log == 0:
-                step_time = (time.time() - last_step_time) / train_config.steps_log * 1000
-                sample_count_glob = sample_count * world_size
-                sample_tp = (sample_count_glob-last_sample_count) / (time.time() - last_step_time)
-                # dl_time_fraction = time_dataload / train_config.steps_log / step_time * 100  if batch_idx > 0 else 0
-                dl_time_fraction = (time_dataload / train_config.steps_log) if step > train_config.steps_log else None
-                print(f"step {step}, epoch: {step / steps_epoch:.2f}, train loss: {step_loss:.4f}, grad_norm: {grad_norm:.2f}, {step_time:.2f}ms/step, {sample_tp:.2f}samples/sec")
-                if train_config.log_wandb: 
-                    wandb.log({"loss_train": step_loss, "grad_norm": grad_norm, "step_time": step_time, "step": step, "sample_tp": sample_tp, "sample_count": sample_count_glob, "epoch": step / steps_epoch, "dl_time": dl_time_fraction})
-                last_step_time = time.time()
-                last_sample_count = sample_count_glob
-                time_dataload = 0
-
-            # Eval step
-            if is_master and step>0 and step % train_config.steps_eval == 0:
-                transformer.eval()
-                loss_eval = eval_loss(dataloader_eval)
-                sample_count = step * train_config.bs * world_size
-
-                # try different seeds for generating eval images
-                images_eval = [
-                    generate(
-                        p, transformer, tokenizer, text_encoder, dcae, latent_seed=seed, **eval_config.inference_config
-                    ) 
-                    for seed in tqdm(eval_config.seeds, "eval_images")
-                    for p in eval_config.prompts
-                ]
-                clipscore = pil_clipscore(images_eval, eval_config.prompts * len(eval_config.seeds))
-                # add labels before logging the images
-                images_eval = make_grid([
-                    pil_add_text(img, eval_config.prompts[i % len(eval_config.prompts)]) 
-                    for i, img in enumerate(images_eval)
-                ], rows=len(eval_config.seeds), cols=len(eval_config.prompts))
-                print(f"step {step}, eval loss: {loss_eval:.4f}, clipscore: {clipscore:.2f}")
-                if train_config.log_wandb: 
-                    wandb.log({"loss_eval": loss_eval, "clipscore": clipscore, "images_eval": wandb.Image(images_eval), "step": step, "sample_count": sample_count, "epoch": step / steps_epoch})
-                transformer.train()  
-
-            # reset step loss after (maybe) logging it
-            step_loss = 0
-            time_dataload_start = time.time()
-
+        step += 1
     
     if ddp: torch.distributed.barrier()  # sync before save? don't know, let's be safe
     if is_master and epoch % train_config.epochs_save == 0:
@@ -376,6 +345,6 @@ if ddp: torch.distributed.barrier()
 
 if is_master:
     wandb.finish()
-    transformer.module.push_to_hub(f"g-ronimo/hana-{train_config.version}")
+    transformer.module.push_to_hub(f"g-ronimo/hana-alpha41")
 
 if ddp: dist.destroy_process_group()

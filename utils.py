@@ -269,7 +269,8 @@ def free_memory():
         torch_npu.npu.empty_cache()
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.empty_cache()
-
+        
+# SIGLIP2
 def encode_prompt(prompt, tokenizer, text_encoder):
     # lower case prompt! took a long time to find that this is necessary: https://github.com/huggingface/diffusers/blob/e8aacda762e311505ba05ae340af23b149e37af3/src/diffusers/pipelines/sana/pipeline_sana.py#L433
     tokenizer.padding_side = "right"
@@ -279,7 +280,7 @@ def encode_prompt(prompt, tokenizer, text_encoder):
         prompt = prompt.lower().strip()
     else:
         raise Exception(f"Unknown prompt type {type(prompt)}")         
-    prompt_tok = tokenizer(prompt, return_tensors="pt", padding="max_length", truncation=True, max_length=300, add_special_tokens=True).to(text_encoder.device)
+    prompt_tok = tokenizer(prompt, return_tensors="pt", return_attention_mask=True, padding="max_length", truncation=True, max_length=50, add_special_tokens=True).to(text_encoder.device)
     with torch.no_grad():
         prompt_encoded=text_encoder(**prompt_tok)
     return prompt_encoded.last_hidden_state, prompt_tok.attention_mask
