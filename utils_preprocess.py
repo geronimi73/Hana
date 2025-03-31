@@ -66,7 +66,84 @@ def closest_ar_bucket(img, ARs=None):
 
     return ARs[arbucket_idx]
 
-def resize(img, resizeTo=None, debug=False, ARs=None):
+def resizeToClosestMultOf(img, resizeTo=None, denominator=32, maxDim=None):
+    """
+    Resize an image to have dimensions that are multiples of a specific value. Intended for subsequent processing by DC-AE.
+    
+    This function performs a two-step operation:
+    1. Resizes the smallest dimension of the input image to the target size
+    2. Center crops the image so both dimensions are multiples of the denominator
+    
+    Parameters:
+    -----------
+    img : PIL.Image
+        The input image to be processed.
+    resizeTo : int, required
+        The target size for the smallest dimension of the image in pixels.
+    denominator : int, default=32
+        The value of which both final dimensions should be multiples.
+        
+    Returns:
+    --------
+    PIL.Image
+        The resized and cropped image with dimensions that are multiples
+        of the specified denominator.
+            
+    """
+    img = img.convert('RGB') if img.mode!="RGB" else img
+
+    # First, resize smallest side to target
+    img = T.Resize(resizeTo, antialias=True)(img)
+
+    # Second, figure out which area to center crop, closest multiple of 32
+    w, h = img.size
+    newW, newH = closest_mult_of(w, denominator), closest_mult_of(h, denominator)
+
+    # Third, restrict maxDim if needed
+    if maxDim:
+        newW, newH = min(newW, maxDim), min(newH, maxDim)
+
+    img = T.CenterCrop((newH, newW))(img)
+
+    return (newW, newH), img
+
+def resizeToARBucket(img, resizeTo=None, debug=False, ARs=None):
+    """
+    Resize and crop an image to fit the closest aspect ratio bucket.
+    
+    This function takes an input image, resizes it so that its smallest dimension
+    equals 'resizeTo', and then applies a center crop to match the closest predefined
+    aspect ratio bucket.
+    
+    Parameters:
+    -----------
+    img : PIL.Image
+        The input image to be processed.
+    resizeTo : int, required
+        The target size for the smallest dimension of the image in pixels.
+    debug : bool, default=False
+        If True, prints debugging information about cropping operations.
+    ARs : dict, optional
+        A dictionary of aspect ratio buckets. If None, uses default buckets
+        defined in closest_ar_bucket().
+        
+    Returns:
+    --------
+    tuple
+        A tuple containing:
+        - ar_name (str): The name of the chosen aspect ratio bucket
+        - img (PIL.Image): The resized and cropped image
+        
+    Notes:
+    ------
+    - Converts input image to RGB mode if it's not already
+    - For square images (AR=1), crops to resizeTo×resizeTo
+    - For landscape images (AR>1), crops to resizeTo×(AR*resizeTo)
+    - For portrait images (AR<1), crops to (resizeTo/AR)×resizeTo
+    - Dimensions are adjusted to be a multiple of 8 using closest_mult_of()
+    - CenterCrop expects dimensions in (height, width) order
+    """
+
     assert resizeTo is not None
     def noop(x): return x
     img = img.convert('RGB') if img.mode!="RGB" else img
