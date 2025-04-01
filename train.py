@@ -107,7 +107,7 @@ eval_config = SimpleNamespace(
     )
 )
 
-# %% train.ipynb 7
+# %% train.ipynb 5
 def load_models(text_encoder, transformer_repo, ae, dtype, device):
     if ".json" in transformer_repo:
         transformer = SanaTransformer2DModel.from_config(transformer_repo).to(device).to(dtype)
@@ -146,10 +146,11 @@ def eval_loss(dataloader_eval, testing=False):
     
         loss = F.mse_loss(noise_pred, noise - latents)
         losses.append(loss.item())  
-        if testing: break
+        # stop if testing or 1 epoch complete
+        if testing or batch_num>len(dataloader_eval): break
     return sum(losses)/len(losses)
 
-# %% train.ipynb 9
+# %% train.ipynb 7
 if ddp:
     dist.init_process_group(backend='nccl')
     is_master = dist.get_rank() == 0  
@@ -197,10 +198,11 @@ wandb_run = train_config.wandb_run.format(
     device=device,
 )
 
-steps_epoch = len(ds[data_config.split_train])  // (train_config.bs * train_config.gradient_accumulation_steps * world_size)
+# num_batches / batches per step
+steps_epoch = len(dataloader_train)  // train_config.gradient_accumulation_steps
 if is_master: print(f"steps per epoch: {steps_epoch}")
 
-# %% train.ipynb 13
+# %% train.ipynb 11
 if is_master and train_config.log_wandb: 
     if wandb.run is not None: wandb.finish()
     wandb.init(
@@ -297,7 +299,7 @@ for batch_idx, (labels, latents, prompts_encoded, prompts_atnmask) in enumerate(
         if ddp: transformer.module.save_pretrained(f"cp-e{epoch}")
         else: transformer.save_pretrained(f"cp-e{epoch}")
 
-# %% train.ipynb 14
+# %% train.ipynb 12
 if ddp: torch.distributed.barrier()
 
 if is_master:

@@ -79,6 +79,6 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
 
         return labels, latents, label_embs, label_atnmasks
 
-    def __len__(self): return len(self.hf_dataset)    
+    def __len__(self): return len(self.sampler) // self.bs
 
 
