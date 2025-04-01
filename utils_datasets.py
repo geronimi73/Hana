@@ -46,21 +46,24 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         return prompts_encoded.last_hidden_state, prompts_tok.attention_mask
 
     def __iter__(self):
-        samples_by_shape = {}
+        samples_by_shape, epoch = {}, 0
+
+        while True:
+            if isinstance(self.sampler, DistributedSampler): self.sampler.set_epoch(epoch)
+
+            for samples in self.dataloader:
+                for sample in samples:
+                    shape = tuple(sample[self.col_latentshape])
         
-        for samples in self.dataloader:
-            for sample in samples:
-                # sample = self.hf_dataset[sample_idx]
-                shape = tuple(sample[self.col_latentshape])
-    
-                # group items by shape
-                if not shape in samples_by_shape: samples_by_shape[shape] = []
-                samples_by_shape[shape].append(sample)
-    
-                # once we have enough items of a given shape -> collate and yield a batch
-                if len(samples_by_shape[shape]) == self.bs: 
-                    yield self.prepare_batch(samples_by_shape[shape], shape)
-                    samples_by_shape[shape] = []
+                    # group items by shape
+                    if not shape in samples_by_shape: samples_by_shape[shape] = []
+                    samples_by_shape[shape].append(sample)
+        
+                    # once we have enough items of a given shape -> collate and yield a batch
+                    if len(samples_by_shape[shape]) == self.bs: 
+                        yield self.prepare_batch(samples_by_shape[shape], shape)
+                        samples_by_shape[shape] = []
+            epoch += 1
                 
     def prepare_batch(self, items, shape):
         latent_shape = [len(items)]+list(shape)
@@ -76,7 +79,6 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
 
         return labels, latents, label_embs, label_atnmasks
 
-    def set_epoch(self, epoch): self.sampler.set_epoch(epoch)
-    def __len__(self): return len(self.dataloader)    
+    def __len__(self): return len(self.hf_dataset)    
 
 
