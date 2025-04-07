@@ -1,7 +1,17 @@
-# Hana
-~~A [Sana](https://nvlabs.github.io/Sana/)-like text-to-image model trained from scratch~~
+# Hana 🌸
+A text-to-image model trained from scratch. The model architecture is a frankensteined [Sana](https://nvlabs.github.io/Sana/) (NVIDIA). 
 
-I have no idea what I am doing and that's why I do it
+Features of latest version:
+
+* 600M parameter diffuser model 
+* HF [SmolLM2-360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M) as text encoder
+* Han lab [Deep Compression AutoEncoder](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers)
+* trained on ImageNet
+* at home with 4x3090s 
+
+This is a public log of my work in progress.
+
+## Samples 
 
 <div align="center" border-radius="10px">
   <img src="assets/alpha42_e100_output.gif" width="50%"/>
