@@ -14,8 +14,8 @@ This is a public log of my work in progress.
 ## Samples 
 
 <div align="center" border-radius="10px">
-  <img src="assets/alpha42_e100_output.gif" width="50%"/>
-  <p style="font-style: italic; color: #666;">Alpha-42 samples</p>
+  <img src="assets/alpha44_e100_output.gif" width="50%"/>
+  <p style="font-style: italic; color: #666;">Alpha-44 samples</p>
 </div>
 
 
