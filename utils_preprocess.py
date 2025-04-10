@@ -1,13 +1,54 @@
-import torchvision.transforms as T
-import numpy as np
-
-from PIL import PngImagePlugin
+from PIL import PngImagePlugin, Image
 # otherwise might lead to Decompressed Data Too Large for some images
 LARGE_ENOUGH_NUMBER = 10
 PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
+Image.MAX_IMAGE_PIXELS = None
+
+from io import BytesIO
 import fcntl
-import os
-import time
+import os, time, numpy as np, requests, torchvision.transforms as T
+import aiohttp, asyncio
+
+
+async def download_image(session, url, timeout=300):
+    try:
+        async with session.get(url, timeout=timeout) as response:
+            if response.status != 200:
+                print(f"Failed to download {url}: HTTP status {response.status}")
+                return None
+                
+            content = await response.read()
+            try:
+                return Image.open(BytesIO(content))
+            except Exception as e:
+                print(f"Failed to process image from {url}: {str(e)}")
+                return None
+                
+    except asyncio.TimeoutError:
+        print(f"Timeout while downloading {url}")
+        return None
+    except aiohttp.ClientError as e:
+        print(f"Client error while downloading {url}: {str(e)}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error while downloading {url}: {str(e)}")
+        return None
+
+async def download_all_images(urls):
+    async with aiohttp.ClientSession() as session:
+        tasks = [download_image(session, url) for url in urls]
+        return await asyncio.gather(*tasks)
+
+def url_to_image(url):
+    # Send a HTTP request to the URL
+    response = requests.get(url)
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Open the image using PIL
+        img = Image.open(BytesIO(response.content))
+        return img
+    else:
+        return None
 
 LOCK_FILE_PATH = 'lock_file.lock'
 
@@ -85,6 +126,9 @@ def resizeToClosestMultOf(img, resizeTo=None, denominator=32, maxDim=None):
         
     Returns:
     --------
+    (newWidth, newHeight)
+        A tuple of the img dimensions after resizing (and cropping)
+
     PIL.Image
         The resized and cropped image with dimensions that are multiples
         of the specified denominator.
@@ -103,9 +147,7 @@ def resizeToClosestMultOf(img, resizeTo=None, denominator=32, maxDim=None):
     if maxDim:
         newW, newH = min(newW, maxDim), min(newH, maxDim)
 
-    img = T.CenterCrop((newH, newW))(img)
-
-    return (newW, newH), img
+    return T.CenterCrop((newH, newW))(img)
 
 def resizeToARBucket(img, resizeTo=None, debug=False, ARs=None):
     """
