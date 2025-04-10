@@ -5,34 +5,50 @@ PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
 Image.MAX_IMAGE_PIXELS = None
 
 from io import BytesIO
-import fcntl
-import os, time, numpy as np, requests, torchvision.transforms as T
+import fcntl, random, os, time, numpy as np, requests, torchvision.transforms as T
 import aiohttp, asyncio
 
-
-async def download_image(session, url, timeout=300):
+async def download_image(session, url, timeout=60, retry_count=0, max_retries=5):
     try:
         async with session.get(url, timeout=timeout) as response:
             if response.status != 200:
-                print(f"Failed to download {url}: HTTP status {response.status}")
+                print(f"Failed to download {url}: HTTP status {response.status} (Attempt {retry_count+1}/{max_retries+1})")
+                if retry_count < max_retries:
+                    return await retry_download(session, url, timeout, retry_count, max_retries)
                 return None
                 
             content = await response.read()
             try:
                 return Image.open(BytesIO(content))
             except Exception as e:
-                print(f"Failed to process image from {url}: {str(e)}")
+                print(f"Failed to process image from {url}: {str(e)} (Attempt {retry_count+1}/{max_retries+1})")
+                if retry_count < max_retries:
+                    return await retry_download(session, url, timeout, retry_count, max_retries)
                 return None
                 
     except asyncio.TimeoutError:
-        print(f"Timeout while downloading {url}")
+        print(f"Timeout while downloading {url} (Attempt {retry_count+1}/{max_retries+1})")
+        if retry_count < max_retries:
+            return await retry_download(session, url, timeout, retry_count, max_retries)
         return None
     except aiohttp.ClientError as e:
-        print(f"Client error while downloading {url}: {str(e)}")
+        print(f"Client error while downloading {url}: {str(e)} (Attempt {retry_count+1}/{max_retries+1})")
+        if retry_count < max_retries:
+            return await retry_download(session, url, timeout, retry_count, max_retries)
         return None
     except Exception as e:
-        print(f"Unexpected error while downloading {url}: {str(e)}")
+        print(f"Unexpected error while downloading {url}: {str(e)} (Attempt {retry_count+1}/{max_retries+1})")
+        if retry_count < max_retries:
+            return await retry_download(session, url, timeout, retry_count, max_retries)
         return None
+
+async def retry_download(session, url, timeout, retry_count, max_retries):
+    retry_count += 1
+    # Exponential backoff with jitter
+    wait_time = min(2 ** retry_count + random.uniform(0, 1), 10)
+    print(f"Retrying {url} in {wait_time:.2f} seconds... (Attempt {retry_count+1}/{max_retries+1})")
+    await asyncio.sleep(wait_time)
+    return await download_image(session, url, timeout, retry_count, max_retries)
 
 async def download_all_images(urls):
     async with aiohttp.ClientSession() as session:

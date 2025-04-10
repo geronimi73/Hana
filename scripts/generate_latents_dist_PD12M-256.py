@@ -32,7 +32,7 @@ def process(rank, is_master, world_size):
 	source_dataset = "PD12M"
 	hf_dataset = "g-ronimo/PD12M-256px_dc-ae-f32c32-sana-1.0"
 	resizeTo = 256
-	download_batch_size = 32  
+	download_batch_size = 128  
 	dcae_batch_size = 32  # don't set this too high to keep the GPU busy
 	dcae_f = 32  
 	upload_every = 100_000 if not test_run else 200
@@ -81,10 +81,11 @@ def process(rank, is_master, world_size):
 			]
 
 			return indices, imgids, images, labels
+
 		dl = DataLoader(indices, collate_fn=collate_fn,
 			batch_size=download_batch_size,
 			prefetch_factor=10, 
-			num_workers=5,
+			num_workers=2,
 		)
 
 		pbar = tqdm(total=len(indices), desc=f"Processing split {split}, rank {rank}")
@@ -147,10 +148,12 @@ def process(rank, is_master, world_size):
 					# reached end of dataset -> upload
 					(idx == indices[-1] and len(dataset_list) > 0)
 				):
+					dataset_hf = Dataset.from_list(dataset_list)
+
 					# try to not upload at exactly the same time to the hub
 					lock_file = acquire_lock()
 					print(f"Lock acquired by rank {rank}")
-					Dataset.from_list(dataset_list).push_to_hub(
+					dataset_hf.push_to_hub(
 						hf_dataset, 
 						revision="main",
 						commit_message=f"{split}_worker_{rank}.part_{parts_uploaded}", 
