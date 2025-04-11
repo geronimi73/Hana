@@ -5,8 +5,86 @@ PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
 Image.MAX_IMAGE_PIXELS = None
 
 from io import BytesIO
+from huggingface_hub import HfFileSystem, hf_hub_download
+from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 import fcntl, random, os, time, numpy as np, requests, torchvision.transforms as T
-import aiohttp, asyncio
+import aiohttp, asyncio, json, tempfile, tarfile
+
+
+def hf_list_files(repo, pattern="*.tar"):
+    fs = HfFileSystem()
+    return fs.glob(f"datasets/{repo}/{pattern}")
+
+def download_with_retry(repo_id, filename, repo_type, local_dir, max_retries=500, retry_delay=60):
+    for attempt in range(max_retries):
+        try:
+            return hf_hub_download(repo_id=repo_id, filename=filename, repo_type=repo_type, local_dir=local_dir)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Download failed. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+            else:
+                print(f"Max retries reached. Skipping file: {filename}")
+                return None
+
+def read_json_file(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            data = json.load(file)
+        return data
+    except FileNotFoundError:
+        print(f"File not found: {file_path}")
+        return None
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from file: {file_path}")
+        return None
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+def list_json_files(directory):
+    json_files = []
+    for file_name in os.listdir(directory):
+        if file_name.endswith('.json'):
+            json_files.append(os.path.join(directory, file_name))
+    return json_files
+
+def load_and_resize_image(image_meta, basedir, resizeTo, denominator, maxDim):
+    imglabel = image_meta["caption"]
+    imgid = image_meta["key"]
+    imgpath = f"{basedir}/{imgid}.jpg"
+    if not os.path.exists(imgpath):
+        print(f"file {imgpath} does not exist, skip")
+        return None
+    # copy to prevent IOError: [Errno 24] Too many open files 
+    img_ = Image.open(imgpath)
+    img = img_.copy()  
+    img_.close()
+    # resize 
+    img = resizeToClosestMultOf(img, resizeTo=resizeTo, denominator=denominator, maxDim=maxDim) 
+    
+    return dict(id=imgid, img=img, label=imglabel)
+
+def extract_tar(tar_file, parent_dir):
+    extract_dir = tempfile.TemporaryDirectory(dir=parent_dir).name
+    with tarfile.open(tar_file, 'r') as tar:
+        tar.extractall(path=extract_dir)
+
+    # find and read in all the .json files
+    json_files = list_json_files(extract_dir)
+    image_metas = [read_json_file(f) for f in json_files]
+
+    return image_metas, extract_dir
+
+def apply_fn_parallel(fn, data_list, desc, num_workers=8):
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        images = list(tqdm(
+            executor.map(fn, data_list), 
+            total=len(data_list),
+            desc=desc
+        ))
+    return images
 
 async def download_image(session, url, timeout=60, retry_count=0, max_retries=5):
     try:
