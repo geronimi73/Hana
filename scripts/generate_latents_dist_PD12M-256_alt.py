@@ -7,6 +7,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from functools import partial
 from pathlib import Path
+from time import sleep
 
 from utils import make_grid, PIL_to_latent, latent_to_PIL, pil_add_text
 from utils_preprocess import resizeToClosestMultOf, pad, acquire_lock, release_lock, url_to_image, download_all_images
@@ -58,9 +59,19 @@ def process(rank, is_master, world_size):
 	print(f"Loading dataset {ds_source_repo}","rank", rank)
 	all_files = hf_list_files(ds_source_repo)
 	all_files = [os.path.basename(file) for file in all_files]
-	unprocessed_files = all_files
+	processed_files_on_hub = hf_list_files(ds_target_repo+"/data", pattern="*.parquet")
 
-	print(f"Found {unprocessed_files} unprocessed files in {ds_source_repo}","rank", rank)
+	unprocessed_files = []
+	for fn in all_files:
+		is_processed = any([f"/{fn.split('.')[0]}_" in fn_proc for fn_proc in processed_files_on_hub])
+		if not is_processed: unprocessed_files.append(fn)
+
+	print("all files:",len(all_files))
+	print("processed files on hub:",len(processed_files_on_hub))
+	print("unprocessed files:",len(unprocessed_files))
+
+	print(f"Found {len(unprocessed_files)} unprocessed files in {ds_source_repo}","rank", rank)
+	sleep(10)
 
 	# Poor man's distributed sampler
 	indices = list(range(len(unprocessed_files)))  # all ranks
