@@ -65,6 +65,7 @@ def process(rank, is_master, world_size):
 	for fn in all_files:
 		is_processed = any([f"/{fn.split('.')[0]}_" in fn_proc for fn_proc in processed_files_on_hub])
 		if not is_processed: unprocessed_files.append(fn)
+	unprocessed_files.reverse()
 
 	print("all files:",len(all_files))
 	print("processed files on hub:",len(processed_files_on_hub))
@@ -79,7 +80,7 @@ def process(rank, is_master, world_size):
 	unprocessed_files = [unprocessed_files[i] for i in indices]
 
 	for file_num, file in enumerate(unprocessed_files):
-		print(f"Processing file {file_num}/{len(unprocessed_files)}","rank", rank)
+		print(f"Processing file {file_num}/{len(unprocessed_files)}: {file}","rank", rank)
 
 		if os.path.exists(f"{ds_tmp_dir}/{file}"):
 			tar_file = f"{ds_tmp_dir}/{file}"
@@ -155,13 +156,20 @@ def process(rank, is_master, world_size):
 		# try to not upload at exactly the same time to the hub
 		lock_file = acquire_lock()
 		print(f"Lock acquired by rank {rank}")
-		dataset_hf.push_to_hub(
-			ds_target_repo, 
-			revision="main",
-			commit_message=f"{tar_file_stem}_worker_{rank}", 
-			split=f"{tar_file_stem}_worker_{rank}", 
-			num_shards=1
-		)
+		for attempt in range(100):
+			try:
+				dataset_hf.push_to_hub(
+					ds_target_repo, 
+					revision="main",
+					commit_message=f"{tar_file_stem}_worker_{rank}", 
+					split=f"{tar_file_stem}_worker_{rank}", 
+					num_shards=1
+				)
+				break
+			except Exception as e:
+				print(f"Upload failed, attempt #{attempt}, retrying")
+				time.sleep(10)
+
 		release_lock(lock_file)
 		print(f"Lock released by rank {rank}")
 
