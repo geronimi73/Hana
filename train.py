@@ -67,13 +67,19 @@ data_config = SimpleNamespace(
 )
 
 train_config = SimpleNamespace(
-    version = "alpha43",
-    lr = 1e-4,
+    version = "alpha44",
+    lr = 4e-4,
     bs = 256,
     gradient_accumulation_steps = 1,
     epochs = 100,
     resume_from_step = None,
-    steps_warmup = 500,
+    lr_scheduler = torch.optim.lr_scheduler.LinearLR,
+    lr_scheduler_args = dict(
+        start_factor=1.0, 
+        end_factor=0.25, 
+        total_iters=50_000,
+    ),
+    # steps_warmup = None,
     steps_log = 10,
     steps_eval = 1300,
     epochs_save = 1,
@@ -186,7 +192,7 @@ dataloader_eval = ShapeBatchingDataset(
 )
 
 optimizer = bnb.optim.AdamW8bit(transformer.parameters(), lr=train_config.lr)
-lr_scheduler = get_constant_schedule_with_warmup(optimizer, train_config.steps_warmup)
+lr_scheduler = train_config.lr_scheduler(optimizer, **train_config.lr_scheduler_args)
 
 wandb_run = train_config.wandb_run.format(
     version=train_config.version,
