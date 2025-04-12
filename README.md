@@ -15,7 +15,7 @@ This is a public log of my work in progress.
 
 <div align="center" border-radius="10px">
   <img src="assets/alpha44_e100_output.gif" width="50%"/>
-  <p style="font-style: italic; color: #666;">Alpha-44 samples</p>
+  <p style="font-style: italic; color: #666;">Alpha-44 samples, <a href="assets/alpha44_rnd-PartiPrompts.jpg">more</a></p>
 </div>
 
 
@@ -57,25 +57,14 @@ This is a public log of my work in progress.
 | Alpha-2     | [Gemma2 2b](https://huggingface.co/google/gemma-2-2b)   | [dc-ae-f32c32-sana-1.0](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers)         | SanaTransformer2DModel (158.18M) 7 layers instead of 28            | [MNIST](https://huggingface.co/datasets/g-ronimo/MNIST-latents_dc-ae-f32c32-sana-1.0) <br/> 7940 steps,<br/>BS 128                                                                          | 1x4090, 40'     | [Model](https://huggingface.co/g-ronimo/hana-small_MNIST-BATCHED)        | [Code](https://github.com/geronimi73/Hana/tree/main/archive/Alpha-2)       | [0.933](https://wandb.ai/g-ronimo/Hana/runs/wbxx3k1y)                         | ![images_eval_406_016a491efda29b0ea833](https://github.com/user-attachments/assets/8b367260-3a78-47a0-b6ce-65c95aee78fe)
 | Alpha-1     | [Gemma2 2b](https://huggingface.co/google/gemma-2-2b)   | [dc-ae-f32c32-sana-1.0](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers)         | SanaTransformer2DModel (158.18M) 7 layers instead of 28            | [MNIST](https://huggingface.co/datasets/g-ronimo/MNIST-latents_dc-ae-f32c32-sana-1.0) <br/> 5 epochs,<br/>LR 1e-4,<br/>300k steps,<br/>BS 1                                                 | 1x4090, 4 hours | [Model](https://huggingface.co/g-ronimo/hana-small_MNIST-5e)             | [Code](https://github.com/geronimi73/Hana/tree/main/archive/Alpha-1)       | [0.958](https://wandb.ai/g-ronimo/Hana/runs/zf38z5gx)                         | ![images_eval_15565_b120cf6385fa11612684](https://github.com/user-attachments/assets/96cc0930-47f7-4dfd-aeec-f8f361e75466)
 
-## 🏅🏅Thank you - people, repos, videos, articles
+## 🏅🏅Thank you - people, components, videos, articles
 * [SwayStar](https://github.com/SwayStar123) ⭐️
 * [cloneofsimo/minRF](https://github.com/cloneofsimo/minRF)
-* [🧨 diffusers](https://github.com/huggingface/diffusers)
+* HuggingFace's [🧨 diffusers](https://github.com/huggingface/diffusers), [transformers](https://github.com/huggingface/transformers), [SmolLM2](https://huggingface.co/HuggingFaceTB/SmolLM2-360M), and [SmolVLM2](https://huggingface.co/HuggingFaceTB/SmolVLM2-2.2B-Instruct)
+* Two more great VLMs: [Moondream](https://huggingface.co/vikhyatk/moondream2) and [Qwen2.5-VL](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)
 * [MITs HAN lab](https://github.com/mit-han-lab)
 * [ModernBERT](https://github.com/AnswerDotAI/ModernBERT), [answer.ai](https://www.answer.ai/), [Jeremy Howard and Jonathan Whitaker](https://www.youtube.com/watch?v=_7rMfsA24Ls&ab_channel=JeremyHoward)
 * [ostris/ai-toolkit](https://github.com/ostris/ai-toolkit])
 * [bghira/SimpleTuner](https://github.com/bghira/SimpleTuner)
-
-
-
-
-
-
-
-
-
-
-
-
-
+* Google's [PartiPrompts](https://github.com/google-research/parti/blob/main/PartiPrompts.tsv)
 
