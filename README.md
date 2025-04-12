@@ -15,7 +15,7 @@ This is a public log of my work in progress.
 
 <div align="center" border-radius="10px">
   <img src="assets/alpha44_e100_output.gif" width="50%"/>
-  <p style="font-style: italic; color: #666;">Alpha-44 samples</p>
+  <p style="font-style: italic; color: #666;">Alpha-44 samples, <a href="assets/alpha44_rnd-PartiPrompts.jpg">more</a></p>
 </div>
 
 
