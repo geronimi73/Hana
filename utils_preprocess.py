@@ -14,7 +14,11 @@ import aiohttp, asyncio, json, tempfile, tarfile
 
 def hf_list_files(repo, pattern="*.tar"):
     fs = HfFileSystem()
-    return fs.glob(f"datasets/{repo}/{pattern}")
+    try:
+        found_files = fs.glob(f"datasets/{repo}/{pattern}")
+        return found_files
+    except FileNotFoundError:
+        return []
 
 def download_with_retry(repo_id, filename, repo_type, local_dir, max_retries=500, retry_delay=60):
     for attempt in range(max_retries):
@@ -77,7 +81,7 @@ def extract_tar(tar_file, parent_dir):
 
     return image_metas, extract_dir
 
-def apply_fn_parallel(fn, data_list, desc, num_workers=8):
+def apply_fn_parallel(fn, data_list, desc, num_workers=6):
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         images = list(tqdm(
             executor.map(fn, data_list), 
