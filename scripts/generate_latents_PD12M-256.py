@@ -56,7 +56,7 @@ unprocessed_files = []
 for fn in all_files:
 	is_processed = any([f"/{fn.split('.')[0]}_" in fn_proc for fn_proc in processed_files_on_hub])
 	if not is_processed: unprocessed_files.append(fn)
-# unprocessed_files.reverse()
+unprocessed_files.reverse()
 
 def download_file(tar_file):
 	tar_file = download_with_retry(repo_id=ds_source_repo, filename=tar_file, repo_type="dataset", local_dir=ds_tmp_dir)
@@ -165,6 +165,7 @@ def process_image(tar_file, images):
 	# try to not upload at exactly the same time to the hub
 	lock_file = acquire_lock()
 	# print(f"Lock acquired by rank {rank}")
+	# TODO: IMPLEMENT RETRIES
 	dataset_hf.push_to_hub(
 		ds_target_repo, 
 		revision="main",
