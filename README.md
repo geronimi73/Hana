@@ -6,7 +6,7 @@ Latest specs:
 * 600M parameter diffuser model ([Sana](https://nvlabs.github.io/Sana/) architecture)
 * Hugging Face's [SmolLM2-360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M) as text encoder
 * Han lab's [Deep Compression AutoEncoder](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.0-diffusers)
-* Training on [ImageNet-1k](https://huggingface.co/datasets/visual-layer/imagenet-1k-vl-enriched)
+* Trained on [ImageNet-1k](https://huggingface.co/datasets/visual-layer/imagenet-1k-vl-enriched)
 * .. at home with 4x3090s 
 
 This is a public log of my work in progress.
