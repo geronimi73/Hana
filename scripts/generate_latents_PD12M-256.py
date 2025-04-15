@@ -166,13 +166,26 @@ def process_image(tar_file, images):
 	lock_file = acquire_lock()
 	# print(f"Lock acquired by rank {rank}")
 	# TODO: IMPLEMENT RETRIES
-	dataset_hf.push_to_hub(
-		ds_target_repo, 
-		revision="main",
-		commit_message=f"{tar_file_stem}_worker_{rank}", 
-		split=f"{tar_file_stem}_worker_20250413_{rank}", 
-		num_shards=1
-	)
+	max_retries = 200
+	retry_delay = 60
+	for attempt in range(max_retries):
+		try:
+			dataset_hf.push_to_hub(
+				ds_target_repo, 
+				revision="main",
+				commit_message=f"{tar_file_stem}_worker_{rank}", 
+				split=f"{tar_file_stem}_worker_20250413_{rank}", 
+				num_shards=1
+			)
+			break
+		except Exception as e:
+			if attempt < max_retries - 1:
+				print(f"Upload failed. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+				time.sleep(retry_delay)
+			else:
+				print(f"Max retries reached. Skipping file: {tar_file_stem}")
+				return None
+
 	release_lock(lock_file)
 	# print(f"Lock released by rank {rank}")
 
