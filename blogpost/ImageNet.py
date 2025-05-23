@@ -1,15 +1,13 @@
 import torch
 import torch.nn.functional as F
 import wandb
-from torch.utils.data import DataLoader
+import time
 from torchvision import transforms
 from torchvision.utils import make_grid
 from transformers import set_seed, AutoModel, AutoTokenizer
 from diffusers import AutoencoderDC, SanaTransformer2DModel
-from datasets import load_dataset
 from functools import partial
 from tqdm import tqdm
-from random import random
 
 from utils import (
     latent_to_PIL, 
@@ -20,32 +18,37 @@ from utils import (
     pil_clipscore,
     SanaDiTS,
     SanaDiTB,
-    FMNIST_LABEL_TO_DESC
+    StepLogger,
+    pil_concat,
+    pil_add_text,
+    load_IN1k128px,
+    load_IN1k256px,
 )
 
 lr = 5e-4
-bs = 1024
-epochs = 10
+bs = 384
+epochs = 100
+latent_dim = [1, 32, 8, 8]
 eval_prompts = [
-    "a collection of comic books on a table",
-    "a green plant with a green stem",
+    "a mountain landscape",
+    "a green plant with a brown stem",
+    "a tiny bird",
     "an airplane in the sky",
-    "two fighter jets on the red sky",
     "a blonde girl",
     "a red car",
-    "a blue car",
     "a cheeseburger on a white plate", 
     "a bunch of bananas on a wooden table", 
     "a white tea pot on a wooden table", 
     "an erupting volcano with lava pouring out",
+    "a sunflower wearing sunglasses",
+    "a black cat",
+    "a dog in the swimming pool",
     "a european castle on a mountain",
     "a red train in the mountains",
-    "a photo of the eiffel tower in the dessert",
 ]
 
 te_repo = "answerdotai/ModernBERT-base"
 sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
-dataset_repo ="g-ronimo/IN1k-128-latents_dc-ae-f32c32-sana-1.0"
 
 set_seed(42)
 
@@ -59,7 +62,7 @@ text_encoder = AutoModel.from_pretrained(te_repo, torch_dtype=dtype).to(device)
 dcae = AutoencoderDC.from_pretrained(sana_repo, subfolder="vae", torch_dtype=dtype).to(device)
 
 # Initialize the DiT, DiT-S with 12 layers, hidden size 384
-transformer = SanaDiTB().to(dtype).to(device)
+transformer = SanaDiTS().to(dtype).to(device)
 
 transformer_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad) / 1e6
 print(f"Transformer parameters: {transformer_params:.2f}M")
@@ -73,48 +76,29 @@ generate = partial(
     dcae=dcae
 )
 
-# Prepare dataloader
-def collate(items):
-    # drop 10% of the labels
-    labels = [ i["label"] if random() > 0.1 else "" for i in items ]
+dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs)
 
-    latents = torch.Tensor([i["latent"] for i in items])
-    B, num_aug, _, _, _ = latents.shape
-    aug_idx = 0
-    batch_idx = torch.arange(B)
-    latents = latents[batch_idx, aug_idx] 
-
-    # latents = torch.cat(
-    #     [torch.Tensor(i["latent"][0])[None] for i in items]
-    # )
-
-    return labels, latents
-
-ds = load_dataset(dataset_repo)
-dataloader_train = DataLoader(ds["train"], batch_size=bs, collate_fn=collate, num_workers=4, prefetch_factor=2)
-dataloader_eval = DataLoader(ds["test"], batch_size=256, collate_fn=collate)
-
-# Optimizer
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 
+# Step logger, calculates avg. sample processing and dataloading time
+steplog = StepLogger()
+
 # Eval: images
-def eval_images(seed = None):
+def eval_images(seed = 42, guidance_scales = [2, 7]):
+    images = []
+    for prompt in tqdm(eval_prompts, "eval_images"):
+        img = pil_concat([
+            generate(prompt, guidance_scale=guidance_scale, seed=seed, latent_dim=latent_dim)
+            for guidance_scale in guidance_scales
+        ])
+        img = pil_add_text(img, prompt, position=(0,0))
+        images.append(img)
+
     return transforms.ToPILImage()(
         make_grid(
-            [
-                transforms.ToTensor()(
-                    generate(
-                        prompt,
-                        latent_dim = [1, 32, 4, 4],
-                        num_steps = 10,
-                        guidance_scale = guidance_scale,
-                        seed = seed
-                    )
-                ) 
-                for prompt in tqdm(eval_prompts, "eval_images")
-                for guidance_scale in [1, 2, 7]
-            ], 
-            nrow=9
+            [transforms.ToTensor()(img) for img in images],
+            pad_value=1,
+            nrow=3
         )
     )
 
@@ -124,7 +108,7 @@ def eval_clipscore():
         generate(
             prompt,
             # 4x4 latents -> 128x128px images
-            latent_dim=[1, 32, 4, 4],
+            latent_dim=latent_dim,
             guidance_scale=7,
             num_steps=10,
         )
@@ -165,9 +149,11 @@ wandb.init(
 
 # TRAIN
 step = 0 
+step_dl_time, step_dl_start = None, None
 for e in range(epochs):
     for labels, latents in dataloader_train:
         step += 1
+        steplog.step_start()
         epoch = step/len(dataloader_train)
 
         # Encode prompts
@@ -193,12 +179,16 @@ for e in range(epochs):
         optimizer.zero_grad()
     
         if step % 10 == 0:
-            print(f"step {step} epoch {epoch:.2f} loss: {loss.item()}")
-            wandb.log({"step": step, "epoch": epoch, "loss_train": loss.item()})
-            eval_clipscore()
+            step_time, dl_time = steplog.get_avg_step_time(num_steps=20), steplog.get_avg_dl_time(num_steps=20)
 
-        if step % 300 == 0:
-            wandb.log({"step": step, "epoch": epoch, "eval_images": wandb.Image(eval_images(seed=42))})
+            print(f"step {step} epoch {epoch:.2f} loss: {loss.item()} step_time: {step_time:.2f} dl_time: {dl_time:.2f} ")
+            wandb.log({"step": step, "step_time": step_time, "dl_time": dl_time, "epoch": epoch, "loss_train": loss.item()})
+            step_dl_time = 0
+
+        if step % 500 == 0:
+            wandb.log({"step": step, "epoch": epoch, "eval_images": wandb.Image(eval_images())})
+
+        steplog.step_end()
 
     # eval after each epoch
     el = eval_loss()
@@ -206,10 +196,10 @@ for e in range(epochs):
     wandb.log({"step": step, "epoch": epoch, "loss_eval": el, "eval_clipscore": eval_clipscore()})
 
     # save after each epoch
-    transformer.save_pretrained(f"IN96px_e{e}")
+    transformer.save_pretrained(f"IN1k-256px_e{e}")
 
 # log a big 10x10 gallery 
-wandb.log({"final_gallery": wandb.Image(eval_images(num_rows=10))})
+wandb.log({"final_gallery": wandb.Image(eval_images())})
 
 wandb.finish()
 

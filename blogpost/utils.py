@@ -1,13 +1,135 @@
 import torch
 import torchvision.transforms as T
+import time
+import platform
+import random
 from torchvision.transforms.functional import pil_to_tensor
 from torchmetrics.functional.multimodal import clip_score
+from PIL import Image, ImageDraw, ImageFont
+from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 
-FMNIST_LABEL_TO_DESC = {
-    0: "T-shirt/top", 1: "Trouser", 2: "Pullover", 3: "Dress",
-    4: "Coat", 5: "Sandal", 6: "Shirt", 7: "Sneaker", 8: "Bag",
-    9: "Ankle boot",
-}
+# os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+def load_IN1k128px(batch_size=512, batch_size_eval=256):
+    from torch.utils.data import DataLoader
+    from datasets import load_dataset
+
+    dataset_repo ="g-ronimo/IN1k-128-latents_dc-ae-f32c32-sana-1.0"
+
+    def collate(items):
+        # drop 10% of the labels
+        labels = [ i["label"] if random.random() > 0.1 else "" for i in items ]
+
+        latents = torch.Tensor([i["latent"] for i in items])
+        B, num_aug, _, _, _ = latents.shape
+        # augmentation 0 = original image
+        aug_idx = 0
+        batch_idx = torch.arange(B)
+        latents = latents[batch_idx, aug_idx] 
+
+        return labels, latents
+
+    ds = load_dataset(dataset_repo)
+    dataloader_train = DataLoader(
+        ds["train"], 
+        batch_size=batch_size, 
+        collate_fn=collate, 
+        num_workers=10, 
+        prefetch_factor=2,
+    )
+    dataloader_eval = DataLoader(ds["test"], 
+        batch_size=batch_size_eval, 
+        collate_fn=collate, 
+        num_workers=10,
+    )
+
+    return dataloader_train, dataloader_eval
+
+def load_IN1k256px(batch_size=512, batch_size_eval=256):
+    from datasets import load_dataset
+
+    ds = load_dataset("g-ronimo/IN1k256-bfl16latents_shape_dc-ae-f32c32-sana-1.0")
+    dataloader_train = ShapeBatchingDataset(
+        ds["train"], 
+        batch_size=batch_size,
+        num_workers=10, 
+        prefetch_factor=2,
+    )
+    dataloader_eval = ShapeBatchingDataset(
+        ds["validation"], 
+        batch_size=batch_size_eval,
+        num_workers=5, 
+    )
+
+    return dataloader_train, dataloader_eval
+
+class ShapeBatchingDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        hf_dataset, 
+        batch_size,
+        col_id="image_id", 
+        col_label="label", 
+        col_latent="latent", 
+        col_latentshape="latent_shape",
+        num_workers=4, 
+        prefetch_factor=2,
+        seed=42,
+    ):
+        self.hf_dataset = hf_dataset
+        self.col_label, self.col_latent, self.col_id, self.col_latentshape = col_label, col_latent, col_id, col_latentshape
+        self.batch_size = batch_size
+        self.sampler = RandomSampler(hf_dataset, generator=torch.manual_seed(seed))
+
+        # preload samples with DataLoader, because accessing the hf dataset is expensive (90% of time spent in formatting.py:144(extract_row))
+        self.dataloader = DataLoader(
+            hf_dataset, 
+            sampler=self.sampler, 
+            collate_fn=lambda x: x, 
+            batch_size=batch_size * 2, 
+            num_workers=num_workers, 
+            prefetch_factor=prefetch_factor,
+        )
+    
+    def __iter__(self):
+        samples_by_shape, epoch = {}, 0
+
+        # while True:
+        #     if isinstance(self.sampler, DistributedSampler): self.sampler.set_epoch(epoch)
+
+        for samples in self.dataloader:
+            for sample in samples:
+                shape = tuple(sample[self.col_latentshape])
+    
+                # group items by shape
+                if not shape in samples_by_shape: samples_by_shape[shape] = []
+                samples_by_shape[shape].append(sample)
+    
+                # once we have enough items of a given shape -> collate and yield a batch
+                if len(samples_by_shape[shape]) == self.batch_size: 
+                    yield self.prepare_batch(samples_by_shape[shape], shape)
+                    samples_by_shape[shape] = []
+        for shape in samples_by_shape:
+            if len(samples_by_shape[shape]) > 0:
+                yield self.prepare_batch(samples_by_shape[shape], shape)
+        # epoch += 1
+                
+    def prepare_batch(self, items, shape):
+        latent_shape = [len(items)]+list(shape)
+        labels = [
+            # random pick between md2, qwen2 and smolvlm
+            item[self.col_label][random.randint(1, len(item[self.col_label])-1)]
+            for item in items
+        ]
+        # drop 10% of the labels
+        labels = [ label if random.random() > 0.1 else "" for label in labels ]
+
+        latents = torch.Tensor([item[self.col_latent] for item in items]).reshape(latent_shape)
+
+        return labels, latents
+
+    def __len__(self): return len(self.sampler) // self.batch_size
+
 
 def SanaDiTS():
     from diffusers import SanaTransformer2DModel
@@ -165,3 +287,70 @@ def pil_clipscore(images, prompts, clip_model="openai/clip-vit-base-patch16"):
     with torch.no_grad():
         scores = clip_score(images_tens, prompts, model_name_or_path=clip_model).detach()
     return scores.item()
+
+def pil_concat(images, horizontal=True):
+    w, h = images[0].size
+    combined = Image.new('RGB', (w * len(images), h) if horizontal else (w, h  * len(images)))
+    for i, img in enumerate(images):
+        combined.paste(img, (w * i, 0) if horizontal else (0, h * i))
+    return combined
+
+def pil_add_text(image, text, position=None, font_size=None, font_color=(255, 255, 255), 
+                       font_path=None, stroke_width=1, stroke_fill=(0, 0, 0)):
+    if font_path is None: 
+        if platform.system() == "Darwin":
+            font_path = "Times.ttc"
+        else:
+            font_path = "DejaVuSans.ttf"
+    w, h = image.size
+    if position is None: position = (w//10, h//10)
+    if font_size is None: font_size = round(h*0.1)
+    img_copy = image.copy()
+    draw = ImageDraw.Draw(img_copy)
+    font = ImageFont.truetype(font_path, font_size)
+
+    draw.text(
+        position,
+        text,
+        font=font,
+        fill=font_color,
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill
+    )
+    
+    return img_copy
+
+class StepLogger:
+    def __init__(self):
+        self.step_times = []
+        self.dl_times = []
+        self.start_time, self.end_time = None, None
+
+    def step_start(self):
+        self.start_time = time.time()
+        if self.end_time:
+            self.dl_times.append(self.start_time - self.end_time)
+            
+    def step_end(self):
+        self.end_time = time.time()
+        self.step_times.append(self.end_time - self.start_time)        
+
+    def get_avg_step_time(self, num_steps=None):
+        if num_steps is None: num_steps = len(self.step_times)
+        if not self.step_times or num_steps <= 0: return 0.0
+        num_steps = min(num_steps, len(self.step_times))
+
+        return sum(self.step_times[-num_steps:]) / num_steps
+
+    def get_avg_dl_time(self, num_steps=None):
+        if num_steps is None: num_steps = len(self.dl_times)
+        if not self.dl_times or num_steps <= 0: return 0.0
+        num_steps = min(num_steps, len(self.dl_times))
+
+        return sum(self.dl_times[-num_steps:]) / num_steps
+
+FMNIST_LABEL_TO_DESC = {
+    0: "T-shirt/top", 1: "Trouser", 2: "Pullover", 3: "Dress",
+    4: "Coat", 5: "Sandal", 6: "Shirt", 7: "Sneaker", 8: "Bag",
+    9: "Ankle boot",
+}
