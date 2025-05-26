@@ -52,13 +52,13 @@ def load_IN1k256px(batch_size=512, batch_size_eval=256):
     dataloader_train = ShapeBatchingDataset(
         ds["train"], 
         batch_size=batch_size,
-        num_workers=10, 
+        num_workers=6, 
         prefetch_factor=2,
     )
     dataloader_eval = ShapeBatchingDataset(
         ds["validation"], 
         batch_size=batch_size_eval,
-        num_workers=5, 
+        num_workers=4, 
     )
 
     return dataloader_train, dataloader_eval
@@ -163,8 +163,26 @@ def SanaDiTB():
 
     return SanaTransformer2DModel.from_config(config)
 
+def SanaDiTBSmolLM360M():
+    from diffusers import SanaTransformer2DModel
+    sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
 
-def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10, latent_dim = [1, 32, 8, 8], guidance_scale = None, neg_prompt = "", seed=None):
+    config = SanaTransformer2DModel.load_config(sana_repo, subfolder="transformer")
+    config["num_layers"] = 12
+    config["caption_channels"] = 960
+    config["dropout"] = 0.1
+
+    config["num_attention_heads"] = 12
+    config["attention_head_dim"] = 64
+
+    config["cross_attention_dim"] = 768
+    config["num_cross_attention_heads"] = 12
+
+    return SanaTransformer2DModel.from_config(config)
+
+
+
+def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10, latent_dim = [1, 32, 8, 8], guidance_scale = None, neg_prompt = "", seed=None, max_prompt_tok=50):
     device, dtype = transformer.device, transformer.dtype
     do_cfg = guidance_scale is not None
 
@@ -172,7 +190,8 @@ def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10,
     prompt_encoded, prompt_atnmask = encode_prompt(
         [prompt, neg_prompt] if do_cfg else prompt, 
         tokenizer, 
-        text_encoder
+        text_encoder,
+        max_length = max_prompt_tok
     )
         
     # Divide 1000 -> 0 in equally sized steps
@@ -236,7 +255,7 @@ def add_random_noise(latents, timesteps=1000, dist="uniform"):
 
     return latents_noisy.to(latents.dtype), timesteps, noise
     
-def encode_prompt(prompt, tokenizer, text_encoder, max_length=50):
+def encode_prompt(prompt, tokenizer, text_encoder, max_length=50, add_special_tokens=False):
     # lower case prompt! took a long time to find that this is necessary: https://github.com/huggingface/diffusers/blob/e8aacda762e311505ba05ae340af23b149e37af3/src/diffusers/pipelines/sana/pipeline_sana.py#L433
     tokenizer.padding_side = "right"
     if isinstance(prompt, list):
@@ -245,7 +264,7 @@ def encode_prompt(prompt, tokenizer, text_encoder, max_length=50):
         prompt = prompt.lower().strip()
     else:
         raise Exception(f"Unknown prompt type {type(prompt)}")         
-    prompt_tok = tokenizer(prompt, return_tensors="pt", return_attention_mask=True, padding="max_length", truncation=True, max_length=max_length, add_special_tokens=True).to(text_encoder.device)
+    prompt_tok = tokenizer(prompt, return_tensors="pt", return_attention_mask=True, padding="max_length", truncation=True, max_length=max_length, add_special_tokens=add_special_tokens).to(text_encoder.device)
     with torch.no_grad():
         prompt_encoded=text_encoder(**prompt_tok)
     return prompt_encoded.last_hidden_state, prompt_tok.attention_mask
