@@ -30,7 +30,7 @@ dtype = torch.bfloat16
 device = "cuda:3"
 
 ds_source_repo = "gmongaras/CC12M_and_Imagenet21K_Recap_Highqual"
-ds_target_repo = "g-ronimo/CC12M_IN21K-256px_dc-ae-f32c32-sana-1.0_"
+ds_target_repo = "g-ronimo/CC12M_IN21K-256px_dc-ae-f32c32-sana-1.0"
 resizeTo = 256
 download_batch_size = 128  
 dcae_batch_size = 32  # don't set this too high to keep the GPU busy
@@ -59,12 +59,22 @@ processed_files_on_hub = hf_list_files(ds_target_repo+"/data", pattern="*.parque
 
 unprocessed_files = []
 for fn in all_files:
-    is_processed = any([f"/{fn.split('.')[0]}_" in fn_proc for fn_proc in processed_files_on_hub])
+    is_processed = any(
+        [
+            # - is replaced with _ during uploading!
+            f"/{fn.split('.')[0]}_".replace("-","_") in fn_proc 
+            for fn_proc in processed_files_on_hub
+        ]
+    )
     if not is_processed: 
         unprocessed_files.append("data/" + fn)
 
+print(f"All files: {len(all_files)}")
 print(f"Processed files: {len(processed_files_on_hub)}")
 print(f"Unprocessed files: {len(unprocessed_files)}")
+
+# numbers check out?
+assert len(all_files) - len(processed_files_on_hub) == len(unprocessed_files)
 
 def main():
     
@@ -221,6 +231,9 @@ def process_parquet(tar_file):
                 return None
 
     release_lock(lock_file)
+    
+    # delete downloaded parquet in the end
+    os.remove(tar_file)
     # print(f"Lock released by rank {rank}")
 
     # print(f"Rank {rank} uploaded",len(dataset_list), "samples of file", tar_file)
