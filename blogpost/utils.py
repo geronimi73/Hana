@@ -68,7 +68,8 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         self,
         hf_dataset, 
         batch_size,
-        col_id="image_id", 
+        label_dropout=0.1,
+        col_id="image_id",
         col_label="label", 
         col_latent="latent", 
         col_latentshape="latent_shape",
@@ -80,6 +81,7 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         self.col_label, self.col_latent, self.col_id, self.col_latentshape = col_label, col_latent, col_id, col_latentshape
         self.batch_size = batch_size
         self.sampler = RandomSampler(hf_dataset, generator=torch.manual_seed(seed))
+        self.label_dropout = label_dropout
 
         # preload samples with DataLoader, because accessing the hf dataset is expensive (90% of time spent in formatting.py:144(extract_row))
         self.dataloader = DataLoader(
@@ -109,6 +111,7 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
                 if len(samples_by_shape[shape]) == self.batch_size: 
                     yield self.prepare_batch(samples_by_shape[shape], shape)
                     samples_by_shape[shape] = []
+
         for shape in samples_by_shape:
             if len(samples_by_shape[shape]) > 0:
                 yield self.prepare_batch(samples_by_shape[shape], shape)
@@ -121,8 +124,9 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
             item[self.col_label][random.randint(1, len(item[self.col_label])-1)]
             for item in items
         ]
+
         # drop 10% of the labels
-        labels = [ label if random.random() > 0.1 else "" for label in labels ]
+        labels = [ label if random.random() > label_dropout else "" for label in labels ]
 
         latents = torch.Tensor([item[self.col_latent] for item in items]).reshape(latent_shape)
 
