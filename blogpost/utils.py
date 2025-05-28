@@ -9,7 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 from operator import itemgetter
 
-# os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# stop complaining
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def load_IN1k128px(batch_size=512, batch_size_eval=256):
     from torch.utils.data import DataLoader
