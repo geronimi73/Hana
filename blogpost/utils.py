@@ -1,3 +1,4 @@
+import os
 import torch
 import torchvision.transforms as T
 import time
@@ -128,7 +129,7 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
         ]
 
         # drop 10% of the labels
-        labels = [ label if random.random() > label_dropout else "" for label in labels ]
+        labels = [ label if random.random() > self.label_dropout else "" for label in labels ]
 
         latents = torch.Tensor([item[self.col_latent] for item in items]).reshape(latent_shape)
 
