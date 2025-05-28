@@ -18,6 +18,7 @@ from utils import (
     pil_clipscore,
     SanaDiTS,
     SanaDiTBSmolLM360M,
+    SanaDiTBSmolLMBIG,
     StepLogger,
     pil_concat,
     pil_add_text,
@@ -51,6 +52,7 @@ eval_prompts = [
 prompt_maxlen = 40
 
 te_repo = "HuggingFaceTB/SmolLM2-360M"
+# te_repo = "HuggingFaceTB/SmolLM2-1.7B"
 sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
 
 set_seed(42)
@@ -209,7 +211,20 @@ for e in range(epochs):
 
     # save after each epoch
     # transformer.save_pretrained(f"IN1k-256px_e{e}")
-    transformer.push_to_hub("g-ronimo/HanaDitB-0526-SMOLLM350-256px", variant=f"epoch{e}", private=True)
+    max_retries = 100
+    retry_delay = 20
+    for attempt in range(max_retries):
+        try:
+            transformer.push_to_hub("g-ronimo/HanaDitB-0527-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Upload failed. Retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                print(e)
+                time.sleep(retry_delay)
+            else:
+                print(f"Max retries reached. Skipping upload")
+
 
 # log a big 10x10 gallery 
 wandb.log({"final_gallery": wandb.Image(eval_images())})
