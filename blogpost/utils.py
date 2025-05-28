@@ -184,25 +184,6 @@ def SanaDiTBSmolLM360M():
 
     return SanaTransformer2DModel.from_config(config)
 
-def SanaDiTBSmolLMBIG():
-    from diffusers import SanaTransformer2DModel
-    sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
-
-    config = SanaTransformer2DModel.load_config(sana_repo, subfolder="transformer")
-    config["num_layers"] = 12
-    config["caption_channels"] = 2048
-    config["dropout"] = 0.1
-
-    config["num_attention_heads"] = 12
-    config["attention_head_dim"] = 64
-
-    config["cross_attention_dim"] = 768
-    config["num_cross_attention_heads"] = 12
-
-    return SanaTransformer2DModel.from_config(config)
-
-
-
 def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10, latent_dim = [1, 32, 8, 8], guidance_scale = None, neg_prompt = "", seed=None, max_prompt_tok=50):
     device, dtype = transformer.device, transformer.dtype
     do_cfg = guidance_scale is not None
