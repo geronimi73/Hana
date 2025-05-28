@@ -52,7 +52,6 @@ eval_prompts = [
 prompt_maxlen = 40
 
 te_repo = "HuggingFaceTB/SmolLM2-360M"
-# te_repo = "HuggingFaceTB/SmolLM2-1.7B"
 sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
 
 set_seed(42)
@@ -163,7 +162,6 @@ wandb.init(
 
 # TRAIN
 step = 0 
-step_dl_time, step_dl_start = None, None
 for e in range(epochs):
     for labels, latents in dataloader_train:
         step += 1
@@ -197,7 +195,6 @@ for e in range(epochs):
 
             print(f"step {step} epoch {epoch:.2f} loss: {loss.item()} step_time: {step_time:.2f} dl_time: {dl_time:.2f} ")
             wandb.log({"step": step, "step_time": step_time, "dl_time": dl_time, "epoch": epoch, "loss_train": loss.item()})
-            step_dl_time = 0
 
         if step % 500 == 0:
             wandb.log({"step": step, "epoch": epoch, "eval_images": wandb.Image(eval_images())})
@@ -215,7 +212,7 @@ for e in range(epochs):
     retry_delay = 20
     for attempt in range(max_retries):
         try:
-            transformer.push_to_hub("g-ronimo/HanaDitB-0527-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:
