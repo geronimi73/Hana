@@ -50,6 +50,7 @@ eval_prompts = [
     "a black car in a beautiful field of flowers",
 ]
 prompt_maxlen = 40
+add_random_noise = partial(add_random_noise, dist="normal")  # use lognormal sigmas, default is uniform
 
 te_repo = "HuggingFaceTB/SmolLM2-360M"
 sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
