@@ -208,8 +208,7 @@ for e in range(epochs):
 
     # save after each epoch
     # transformer.save_pretrained(f"IN1k-256px_e{e}")
-    max_retries = 100
-    retry_delay = 20
+    max_retries, retry_delay = 100, 20
     for attempt in range(max_retries):
         try:
             transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
