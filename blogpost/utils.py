@@ -7,6 +7,7 @@ from torchvision.transforms.functional import pil_to_tensor
 from torchmetrics.functional.multimodal import clip_score
 from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
+from operator import itemgetter
 
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -147,6 +148,19 @@ def SanaDiTS():
     config["attention_head_dim"] = 64
     config["cross_attention_dim"] = 384
     config["num_cross_attention_heads"] = 6
+    config["cross_attention_head_dim"] = 64
+
+    # Sanity check
+    hidden_dim = config["num_attention_heads"] * config["attention_head_dim"] 
+    xatn_dim, xatn_heads, xatn_headdim  = itemgetter(
+        "cross_attention_dim", 
+        "num_cross_attention_heads",
+        "cross_attention_head_dim",
+    )(config)
+
+    print("Model width:", hidden_dim)
+    assert hidden_dim == xatn_dim, f"Mismatch, cross_attention_dim={xatn_dim}"
+    assert hidden_dim == xatn_heads * xatn_headdim, f"Mismatch, {xatn_heads} * {xatn_headdim} = {xatn_heads * xatn_headdim}"
 
     return SanaTransformer2DModel.from_config(config)
 
@@ -164,6 +178,19 @@ def SanaDiTB():
 
     config["cross_attention_dim"] = 768
     config["num_cross_attention_heads"] = 12
+    config["cross_attention_head_dim"] = 64
+
+    # Sanity check
+    hidden_dim = config["num_attention_heads"] * config["attention_head_dim"] 
+    xatn_dim, xatn_heads, xatn_headdim  = itemgetter(
+        "cross_attention_dim", 
+        "num_cross_attention_heads",
+        "cross_attention_head_dim",
+    )(config)
+
+    print("Model width:", hidden_dim)
+    assert hidden_dim == xatn_dim, f"Mismatch, cross_attention_dim={xatn_dim}"
+    assert hidden_dim == xatn_heads * xatn_headdim, f"Mismatch, {xatn_heads} * {xatn_headdim} = {xatn_heads * xatn_headdim}"
 
     return SanaTransformer2DModel.from_config(config)
 
@@ -181,6 +208,19 @@ def SanaDiTBSmolLM360M():
 
     config["cross_attention_dim"] = 768
     config["num_cross_attention_heads"] = 12
+    config["cross_attention_head_dim"] = 64
+
+    # Sanity check
+    hidden_dim = config["num_attention_heads"] * config["attention_head_dim"] 
+    xatn_dim, xatn_heads, xatn_headdim  = itemgetter(
+        "cross_attention_dim", 
+        "num_cross_attention_heads",
+        "cross_attention_head_dim",
+    )(config)
+
+    print("Model width:", hidden_dim)
+    assert hidden_dim == xatn_dim, f"Mismatch, cross_attention_dim={xatn_dim}"
+    assert hidden_dim == xatn_heads * xatn_headdim, f"Mismatch, {xatn_heads} * {xatn_headdim} = {xatn_heads * xatn_headdim}"
 
     return SanaTransformer2DModel.from_config(config)
 
