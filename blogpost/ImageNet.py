@@ -18,11 +18,12 @@ from utils import (
     StepLogger,
     pil_concat,
     pil_add_text,
-    load_IN1k256px,
+    load_CC12MIN21K256px,
 )
 
 lr = 5e-4
 bs = 256
+# bs = 128
 epochs = 100
 latent_dim = [1, 32, 8, 8]
 eval_prompts = [
@@ -79,6 +80,7 @@ generate = partial(
 )
 
 dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs)
+# dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs)
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 
@@ -209,6 +211,7 @@ for e in range(epochs):
     for attempt in range(max_retries):
         try:
             transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
+            # transformer.push_to_hub("g-ronimo/HanaDitB-0528-2-SmolLM2-360M-CC12MIN21K256px", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:
