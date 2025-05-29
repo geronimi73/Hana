@@ -9,9 +9,137 @@ from torchmetrics.functional.multimodal import clip_score
 from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import RandomSampler, DistributedSampler, DataLoader
 from operator import itemgetter
+from datasets import load_dataset
 
 # stop complaining
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+###############
+def load_imagenet_1k_vl_enriched_recaped():
+    import requests, gzip, json
+    from io import BytesIO
+    
+    # URL of the gzipped JSON file
+    url = "https://huggingface.co/datasets/g-ronimo/imagenet-1k-vl-enriched-recaped/resolve/main/captions.json.gz"
+    
+    # Download the file
+    response = requests.get(url)
+    response.raise_for_status()  # Check if the request was successful
+    
+    with gzip.GzipFile(fileobj=BytesIO(response.content)) as gz:
+        data = json.loads(gz.read().decode('utf-8'))
+    return data
+
+def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=256):
+    splits_train = ["train_AR_1_to_1", "train_AR_3_to_4", "train_AR_4_to_3"]
+    splits_eval = ["validation_AR_1_to_1", "validation_AR_3_to_4", "validation_AR_4_to_3"]
+
+    ds = load_dataset("g-ronimo/IN1k256-AR-buckets-bfl16latents_dc-ae-f32c32-sana-1.0")
+
+    dataloader_train = ImageNet96ARDataset(
+        ds, 
+        splits=splits_train, 
+        text_enc=text_encoder, 
+        tokenizer=tokenizer, 
+        bs=batch_size, 
+        ddp=False
+    )
+
+    dataloader_eval = ImageNet96ARDataset(
+        ds, 
+        splits=splits_eval, 
+        text_enc=text_encoder, 
+        tokenizer=tokenizer, 
+        bs=batch_size, 
+        ddp=False
+    )
+
+    return dataloader_train, dataloader_eval
+
+class ImageNet96ARDataset(torch.utils.data.Dataset):
+    def __init__(
+        self, hf_dataset, splits, text_enc, tokenizer, bs, ddp=False, col_id="image_id", col_label="label", col_latent="latent"
+    ):
+        self.hf_dataset = hf_dataset
+        self.splits = splits  # each split is one aspect ratio
+        self.col_label, self.col_latent, self.col_id = col_label, col_latent, col_id
+        self.text_enc, self.tokenizer =  text_enc, tokenizer
+        self.tokenizer.padding_side = "right"
+        self.prompt_len = 50
+        self.in1k_recaps = load_imagenet_1k_vl_enriched_recaped()
+
+        seed = 42
+
+        # Create a dataloader for each split (=aspect ratio)
+        self.dataloaders = {}
+        self.samplers = {}
+        for split in splits:
+            if ddp: 
+                self.samplers[split] = DistributedSampler(hf_dataset[split], shuffle=True, seed=seed)
+            else: 
+                self.samplers[split] = RandomSampler(hf_dataset[split], generator=torch.manual_seed(seed))
+            self.dataloaders[split] = DataLoader(
+                hf_dataset[split], sampler=self.samplers[split], collate_fn=self.collate, batch_size=bs, num_workers=4, prefetch_factor=2
+            )
+
+    def collate(self, items):
+        # i[self.col_label][0] is BLIP2, i[self.col_label][1] is moondream2
+        # labels = [i[self.col_label][2] for i in items]
+        labels = [
+            # random pick between md2, qwen2 and smolvlm
+            self.in1k_recaps[i[self.col_id]][random.randint(0, 2)]
+            for i in items
+        ]
+        # latents shape [B, 1, 32, W, H] -> squeeze [B, 32, W, H]
+        latents = torch.Tensor([i[self.col_latent] for i in items]).squeeze()
+
+        return labels, latents
+  
+    def encode_prompts(self, prompts):
+        prompts_tok = self.tokenizer(
+            prompts, padding="max_length", truncation=True, max_length=self.prompt_len, return_attention_mask=True, return_tensors="pt"
+        )
+        with torch.no_grad():
+            prompts_encoded = self.text_enc(**prompts_tok.to(self.text_enc.device))
+        return prompts_encoded.last_hidden_state, prompts_tok.attention_mask
+
+    def __iter__(self):
+        # Reset iterators at the beginning of each epoch
+        iterators = { split: iter(dataloader) for split, dataloader in self.dataloaders.items() }
+        active_dataloaders = set(self.splits)  # Track exhausted dataloaders
+        current_split_index = -1
+        
+        while active_dataloaders:
+            # Round robin: change split on every iteration (=after every batch OR after we unsucc. tried to get a batch) 
+            current_split_index = (current_split_index + 1) % len(self.splits)
+            split = self.splits[current_split_index]
+
+            # Skip if this dataloader is exhausted
+            if split not in active_dataloaders: continue
+            
+            # Try to get the next batch
+            try:
+                labels, latents = next(iterators[split]) 
+                label_embs, label_atnmasks = self.encode_prompts(labels)
+                # latents = latents.to(dtype).to(device)
+                yield labels, latents, label_embs, label_atnmasks
+            # dataloader is exhausted
+            except StopIteration: active_dataloaders.remove(split)
+
+    def set_epoch(self, epoch):
+        for split in self.splits: self.samplers[split].set_epoch(epoch)
+
+
+
+##############
+
+
+
+
+
+
+
 
 def load_IN1k128px(batch_size=512, batch_size_eval=256):
     from torch.utils.data import DataLoader
