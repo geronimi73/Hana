@@ -53,8 +53,8 @@ def load_CC12MIN21K256px(batch_size=512, batch_size_eval=256):
 
     ds = load_dataset(
         "g-ronimo/CC12M_IN21K-256px-splits_dc-ae-f32c32-sana-1.0",
-        cache_dir="workspace/hf_cache",
-        num_proc=8,
+        # cache_dir="workspace/hf_cache",
+        num_proc=4,
     )
     dataloader_train = ShapeBatchingDataset(
         ds["train"], 
@@ -74,7 +74,10 @@ def load_CC12MIN21K256px(batch_size=512, batch_size_eval=256):
 def load_IN1k256px(batch_size=512, batch_size_eval=256, label_dropout=0.1):
     from datasets import load_dataset
 
-    ds = load_dataset("g-ronimo/IN1k256-bfl16latents_shape_dc-ae-f32c32-sana-1.0")
+    ds = load_dataset(
+        "g-ronimo/IN1k256-bfl16latents_shape_dc-ae-f32c32-sana-1.0",
+        num_proc=4,
+    )
     dataloader_train = ShapeBatchingDataset(
         ds["train"], 
         batch_size=batch_size,
