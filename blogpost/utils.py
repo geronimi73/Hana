@@ -71,7 +71,7 @@ def load_CC12MIN21K256px(batch_size=512, batch_size_eval=256):
     return dataloader_train, dataloader_eval
 
 
-def load_IN1k256px(batch_size=512, batch_size_eval=256):
+def load_IN1k256px(batch_size=512, batch_size_eval=256, label_dropout=0.1):
     from datasets import load_dataset
 
     ds = load_dataset("g-ronimo/IN1k256-bfl16latents_shape_dc-ae-f32c32-sana-1.0")
@@ -80,11 +80,13 @@ def load_IN1k256px(batch_size=512, batch_size_eval=256):
         batch_size=batch_size,
         num_workers=6, 
         prefetch_factor=2,
+        label_dropout=label_dropout,
     )
     dataloader_eval = ShapeBatchingDataset(
         ds["validation"], 
         batch_size=batch_size_eval,
         num_workers=4, 
+        label_dropout=0.0,
     )
 
     return dataloader_train, dataloader_eval
@@ -222,14 +224,14 @@ def SanaDiTB():
 
     return SanaTransformer2DModel.from_config(config)
 
-def SanaDiTBSmolLM360M():
+def SanaDiTBSmolLM360M(atn_dropout=0.1):
     from diffusers import SanaTransformer2DModel
     sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
 
     config = SanaTransformer2DModel.load_config(sana_repo, subfolder="transformer")
     config["num_layers"] = 12
     config["caption_channels"] = 960
-    config["dropout"] = 0.1
+    config["dropout"] = atn_dropout
 
     config["num_attention_heads"] = 12
     config["attention_head_dim"] = 64

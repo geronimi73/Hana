@@ -18,11 +18,11 @@ from utils import (
     StepLogger,
     pil_concat,
     pil_add_text,
-    load_CC12MIN21K256px,
+    latent_to_PIL,
+    load_IN1k256px,
 )
 
 lr = 5e-4
-# bs = 256
 bs = 128
 epochs = 100
 latent_dim = [1, 32, 8, 8]
@@ -46,7 +46,7 @@ eval_prompts = [
     "a white cat with purple eyes",
     "a black car in a beautiful field of flowers",
 ]
-prompt_maxlen = 200
+prompt_maxlen = 50
 add_random_noise = partial(add_random_noise, dist="normal")  # use lognormal sigmas, default is uniform
 
 te_repo = "HuggingFaceTB/SmolLM2-360M"
@@ -56,7 +56,7 @@ set_seed(42)
 
 # Choose device and dtype
 dtype = torch.bfloat16
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu"
+device = "cuda:0" if torch.cuda.is_available() else "mps" if torch.mps.is_available() else "cpu"
 
 # Load the text encoder and AE
 tokenizer = AutoTokenizer.from_pretrained(te_repo, torch_dtype=dtype)
@@ -65,7 +65,7 @@ text_encoder = AutoModel.from_pretrained(te_repo, torch_dtype=dtype).to(device)
 dcae = AutoencoderDC.from_pretrained(sana_repo, subfolder="vae", torch_dtype=dtype).to(device)
 
 # Initialize the DiT, DiT-S with 12 layers, hidden size 384
-transformer = SanaDiTBSmolLM360M().to(dtype).to(device)
+transformer = SanaDiTBSmolLM360M(atn_dropout=0.0).to(dtype).to(device)
 
 transformer_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad) / 1e6
 print(f"Transformer parameters: {transformer_params:.2f}M")
@@ -79,8 +79,7 @@ generate = partial(
     dcae=dcae
 )
 
-# dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs)
-dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs)
+dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs, label_dropout=0.0)
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 
@@ -115,6 +114,8 @@ def eval_images(seed = 42, guidance_scales = [2, 7]):
 
 # Eval: clip score
 def eval_clipscore():
+    transformer.eval()
+
     images = [
         generate(
             prompt,
@@ -127,10 +128,13 @@ def eval_clipscore():
         for prompt in tqdm(eval_prompts, "eval_clipscore")
     ]
 
+    transformer.train()
+
     return pil_clipscore(images, eval_prompts)
 
 # Eval: loss
 def eval_loss():
+    transformer.eval()
     losses = []
 
     for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
@@ -151,6 +155,9 @@ def eval_loss():
     
         loss = F.mse_loss(noise_pred, noise - latents)
         losses.append(loss.item())  
+
+    transformer.train()
+
     return sum(losses)/len(losses)
 
 # Setup logging 
@@ -160,9 +167,19 @@ wandb.init(
 ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
 # TRAIN
+transformer.train()
 step = 0 
 for e in range(epochs):
     for labels, latents in dataloader_train:
+        # debug: save zerobatch
+        if step == 0:
+            latents = latents.to(dtype).to(device)
+            images = latent_to_PIL(latents[:min(32, len(labels))], dcae)
+            [ 
+                pil_add_text(img, labels[img_num], position=(0,0)).save(f"zerobatch_{img_num}.png")
+                for img_num, img in enumerate(images)
+            ]
+
         step += 1
         steplog.step_start()
         epoch = step/len(dataloader_train)
@@ -183,17 +200,17 @@ for e in range(epochs):
             timestep = timestep, 
         ).sample
         
-        loss = F.mse_loss(noise_pred, noise - latents)
-        loss.backward()
-    
-        optimizer.step()
         optimizer.zero_grad()
+        loss = F.mse_loss(noise_pred, noise - latents)
+        loss.backward()    
+        grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
+        optimizer.step()
     
         if step % 10 == 0:
             step_time, dl_time = steplog.get_avg_step_time(num_steps=20), steplog.get_avg_dl_time(num_steps=20)
 
             print(f"step {step} epoch {epoch:.2f} loss: {loss.item()} step_time: {step_time:.2f} dl_time: {dl_time:.2f} ")
-            wandb.log({"step": step, "step_time": step_time, "dl_time": dl_time, "epoch": epoch, "loss_train": loss.item()})
+            wandb.log({"step": step, "step_time": step_time, "dl_time": dl_time, "epoch": epoch, "loss_train": loss.item(), "grad_norm": grad_norm})
 
         if step % 500 == 0:
             wandb.log({"step": step, "epoch": epoch, "eval_images": wandb.Image(eval_images())})
@@ -211,7 +228,7 @@ for e in range(epochs):
     for attempt in range(max_retries):
         try:
             # transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
-            transformer.push_to_hub("g-ronimo/HanaDitB-0529-SmolLM2-360M-CC12MIN21K256px", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB_0529_beta-1", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:
