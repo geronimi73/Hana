@@ -48,6 +48,29 @@ def load_IN1k128px(batch_size=512, batch_size_eval=256):
 
     return dataloader_train, dataloader_eval
 
+def load_CC12MIN21K256px(batch_size=512, batch_size_eval=256):
+    from datasets import load_dataset
+
+    ds = load_dataset(
+        "g-ronimo/CC12M_IN21K-256px-splits_dc-ae-f32c32-sana-1.0",
+        cache_dir="workspace/hf_cache",
+        num_proc=8,
+    )
+    dataloader_train = ShapeBatchingDataset(
+        ds["train"], 
+        batch_size=batch_size,
+        num_workers=6, 
+        prefetch_factor=2,
+    )
+    dataloader_eval = ShapeBatchingDataset(
+        ds["test"], 
+        batch_size=batch_size_eval,
+        num_workers=4, 
+    )
+
+    return dataloader_train, dataloader_eval
+
+
 def load_IN1k256px(batch_size=512, batch_size_eval=256):
     from datasets import load_dataset
 
@@ -122,9 +145,12 @@ class ShapeBatchingDataset(torch.utils.data.Dataset):
                 
     def prepare_batch(self, items, shape):
         latent_shape = [len(items)]+list(shape)
+
+        # if we have more than one label -> random pick (between md2, qwen2 and smolvlm)
         labels = [
-            # random pick between md2, qwen2 and smolvlm
-            item[self.col_label][random.randint(1, len(item[self.col_label])-1)]
+            item[self.col_label][random.randint(1, len(item[self.col_label])-1)] 
+            if isinstance(item[self.col_label], list)
+            else item[self.col_label]
             for item in items
         ]
 
