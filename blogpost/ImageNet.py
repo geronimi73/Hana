@@ -20,10 +20,11 @@ from utils import (
     pil_add_text,
     latent_to_PIL,
     load_IN1k256px,
+    load_IN1k256px_AR,
 )
 
 lr = 5e-4
-bs = 128
+bs = 320
 epochs = 100
 latent_dim = [1, 32, 8, 8]
 eval_prompts = [
@@ -79,7 +80,15 @@ generate = partial(
     dcae=dcae
 )
 
-dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs, label_dropout=0.0)
+# dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs, label_dropout=0.0)
+dataloader_train, dataloader_eval = load_IN1k256px_AR(
+    tokenizer=tokenizer,
+    text_encoder=text_encoder,
+    batch_size=bs,
+)
+
+print(f"#samples train: {len(dataloader_train)}")
+print(f"#samples test: {len(dataloader_eval)}")
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 
@@ -87,7 +96,7 @@ optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 steplog = StepLogger()
 
 # Eval: images
-def eval_images(seed = 42, guidance_scales = [2, 7]):
+def eval_images(guidance_scales = [2, 7]):
     images = []
     for prompt in tqdm(eval_prompts, "eval_images"):
         img = pil_concat([
@@ -99,6 +108,7 @@ def eval_images(seed = 42, guidance_scales = [2, 7]):
                 num_steps=20,
                 max_prompt_tok = prompt_maxlen,
             )
+            for seed in [42, 6945, 4009]
             for guidance_scale in guidance_scales
         ])
         img = pil_add_text(img, prompt, position=(0,0))
@@ -137,9 +147,10 @@ def eval_loss():
     transformer.eval()
     losses = []
 
-    for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
+    # for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
+    for batch_num, (labels, latents, prompts_emb, prompts_atnmask) in tqdm(enumerate(dataloader_eval), "eval_loss"):
         # Encode prompts
-        prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
+        # prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
 
         latents *= dcae.config["scaling_factor"]
         latents = latents.to(dtype).to(device)
@@ -170,7 +181,9 @@ wandb.init(
 transformer.train()
 step = 0 
 for e in range(epochs):
-    for labels, latents in dataloader_train:
+    for labels, latents, prompts_emb, prompts_atnmask in dataloader_train:
+    # for labels, latents in dataloader_train:
+
         # debug: save zerobatch
         if step == 0:
             latents = latents.to(dtype).to(device)
@@ -185,7 +198,7 @@ for e in range(epochs):
         epoch = step/len(dataloader_train)
 
         # Encode prompts
-        prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
+        # prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
 
         # Scale latent and add random amount of noise
         latents = latents.to(dtype).to(device)
@@ -228,7 +241,7 @@ for e in range(epochs):
     for attempt in range(max_retries):
         try:
             # transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
-            transformer.push_to_hub("g-ronimo/HanaDitB_0529_beta-1", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB_0529_beta-4", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:

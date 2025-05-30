@@ -68,6 +68,7 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
         self.tokenizer.padding_side = "right"
         self.prompt_len = 50
         self.in1k_recaps = load_imagenet_1k_vl_enriched_recaped()
+        self.bs = bs
 
         seed = 42
 
@@ -129,6 +130,9 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
 
     def set_epoch(self, epoch):
         for split in self.splits: self.samplers[split].set_epoch(epoch)
+
+    def __len__(self):
+        return sum([len(self.samplers[split]) for split in self.splits]) // self.bs
 
 
 
