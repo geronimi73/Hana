@@ -85,10 +85,13 @@ dataloader_train, dataloader_eval = load_IN1k256px_AR(
     tokenizer=tokenizer,
     text_encoder=text_encoder,
     batch_size=bs,
+    label_dropout=0.1,
 )
 
-print(f"#samples train: {len(dataloader_train)}")
-print(f"#samples test: {len(dataloader_eval)}")
+print(f"#batches train: {len(dataloader_train)}")
+print(f"#samples train: ~{len(dataloader_train) * bs}")
+print(f"#batches test: {len(dataloader_eval)}")
+print(f"#samples test: ~{len(dataloader_eval) * bs}")
 
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=lr)
 
@@ -241,7 +244,7 @@ for e in range(epochs):
     for attempt in range(max_retries):
         try:
             # transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
-            transformer.push_to_hub("g-ronimo/HanaDitB_0529_beta-4", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB_0530_beta-5", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:

@@ -31,7 +31,7 @@ def load_imagenet_1k_vl_enriched_recaped():
         data = json.loads(gz.read().decode('utf-8'))
     return data
 
-def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=256):
+def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=256, label_dropout=0.1):
     splits_train = ["train_AR_1_to_1", "train_AR_3_to_4", "train_AR_4_to_3"]
     splits_eval = ["validation_AR_1_to_1", "validation_AR_3_to_4", "validation_AR_4_to_3"]
 
@@ -43,7 +43,8 @@ def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=2
         text_enc=text_encoder, 
         tokenizer=tokenizer, 
         bs=batch_size, 
-        ddp=False
+        label_dropout=label_dropout,
+        ddp=False,
     )
 
     dataloader_eval = ImageNet96ARDataset(
@@ -52,6 +53,7 @@ def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=2
         text_enc=text_encoder, 
         tokenizer=tokenizer, 
         bs=batch_size, 
+        label_dropout=None,
         ddp=False
     )
 
@@ -59,7 +61,7 @@ def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=2
 
 class ImageNet96ARDataset(torch.utils.data.Dataset):
     def __init__(
-        self, hf_dataset, splits, text_enc, tokenizer, bs, ddp=False, col_id="image_id", col_label="label", col_latent="latent"
+        self, hf_dataset, splits, text_enc, tokenizer, bs, label_dropout=None, ddp=False, col_id="image_id", col_label="label", col_latent="latent"
     ):
         self.hf_dataset = hf_dataset
         self.splits = splits  # each split is one aspect ratio
@@ -69,6 +71,7 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
         self.prompt_len = 50
         self.in1k_recaps = load_imagenet_1k_vl_enriched_recaped()
         self.bs = bs
+        self.label_dropout = label_dropout
 
         seed = 42
 
@@ -92,6 +95,11 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
             self.in1k_recaps[i[self.col_id]][random.randint(0, 2)]
             for i in items
         ]
+
+        # drop 10% of the labels
+        if self.label_dropout:
+            labels = [ label if random.random() > self.label_dropout else "" for label in labels ]
+
         # latents shape [B, 1, 32, W, H] -> squeeze [B, 32, W, H]
         latents = torch.Tensor([i[self.col_latent] for i in items]).squeeze()
 
