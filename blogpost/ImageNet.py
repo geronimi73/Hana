@@ -21,10 +21,11 @@ from utils import (
     latent_to_PIL,
     load_IN1k256px,
     load_IN1k256px_AR,
+    load_CC12MIN21K256px
 )
 
 lr = 5e-4
-bs = 320
+bs = 256
 epochs = 100
 latent_dim = [1, 32, 8, 8]
 eval_prompts = [
@@ -47,7 +48,7 @@ eval_prompts = [
     "a white cat with purple eyes",
     "a black car in a beautiful field of flowers",
 ]
-prompt_maxlen = 50
+prompt_maxlen = 100
 add_random_noise = partial(add_random_noise, dist="normal")  # use lognormal sigmas, default is uniform
 
 te_repo = "HuggingFaceTB/SmolLM2-360M"
@@ -81,12 +82,13 @@ generate = partial(
 )
 
 # dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs, label_dropout=0.0)
-dataloader_train, dataloader_eval = load_IN1k256px_AR(
-    tokenizer=tokenizer,
-    text_encoder=text_encoder,
-    batch_size=bs,
-    label_dropout=0.1,
-)
+dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs, label_dropout=0.1)
+# dataloader_train, dataloader_eval = load_IN1k256px_AR(
+#     tokenizer=tokenizer,
+#     text_encoder=text_encoder,
+#     batch_size=bs,
+#     label_dropout=0.1,
+# )
 
 print(f"#batches train: {len(dataloader_train)}")
 print(f"#samples train: ~{len(dataloader_train) * bs}")
@@ -150,10 +152,10 @@ def eval_loss():
     transformer.eval()
     losses = []
 
-    # for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
-    for batch_num, (labels, latents, prompts_emb, prompts_atnmask) in tqdm(enumerate(dataloader_eval), "eval_loss"):
+    for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
+    # for batch_num, (labels, latents, prompts_emb, prompts_atnmask) in tqdm(enumerate(dataloader_eval), "eval_loss"):
         # Encode prompts
-        # prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
+        prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
 
         latents *= dcae.config["scaling_factor"]
         latents = latents.to(dtype).to(device)
@@ -184,8 +186,8 @@ wandb.init(
 transformer.train()
 step = 0 
 for e in range(epochs):
-    for labels, latents, prompts_emb, prompts_atnmask in dataloader_train:
-    # for labels, latents in dataloader_train:
+    # for labels, latents, prompts_emb, prompts_atnmask in dataloader_train:
+    for labels, latents in dataloader_train:
 
         # debug: save zerobatch
         if step == 0:
@@ -201,7 +203,7 @@ for e in range(epochs):
         epoch = step/len(dataloader_train)
 
         # Encode prompts
-        # prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
+        prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
 
         # Scale latent and add random amount of noise
         latents = latents.to(dtype).to(device)
@@ -244,7 +246,7 @@ for e in range(epochs):
     for attempt in range(max_retries):
         try:
             # transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
-            transformer.push_to_hub("g-ronimo/HanaDitB_0530_beta-5", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB_0530_beta-7", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:
