@@ -19,9 +19,7 @@ from utils import (
     pil_concat,
     pil_add_text,
     latent_to_PIL,
-    load_IN1k256px,
     load_IN1k256px_AR,
-    load_CC12MIN21K256px
 )
 
 lr = 5e-4
@@ -81,14 +79,8 @@ generate = partial(
     dcae=dcae
 )
 
-# dataloader_train, dataloader_eval = load_IN1k256px(batch_size=bs, label_dropout=0.0)
-dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs, label_dropout=0.1)
-# dataloader_train, dataloader_eval = load_IN1k256px_AR(
-#     tokenizer=tokenizer,
-#     text_encoder=text_encoder,
-#     batch_size=bs,
-#     label_dropout=0.1,
-# )
+dataloader_train, dataloader_eval = load_IN1k256px_AR(batch_size=bs, label_dropout=0.1)
+# dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs, label_dropout=0.1)
 
 print(f"#batches train: {len(dataloader_train)}")
 print(f"#samples train: ~{len(dataloader_train) * bs}")
@@ -153,8 +145,6 @@ def eval_loss():
     losses = []
 
     for batch_num, (labels, latents) in tqdm(enumerate(dataloader_eval), "eval_loss"):
-    # for batch_num, (labels, latents, prompts_emb, prompts_atnmask) in tqdm(enumerate(dataloader_eval), "eval_loss"):
-        # Encode prompts
         prompts_emb, prompts_atnmask = encode_prompt(labels, tokenizer, text_encoder, max_length=prompt_maxlen)
 
         latents *= dcae.config["scaling_factor"]
@@ -186,7 +176,6 @@ wandb.init(
 transformer.train()
 step = 0 
 for e in range(epochs):
-    # for labels, latents, prompts_emb, prompts_atnmask in dataloader_train:
     for labels, latents in dataloader_train:
 
         # debug: save zerobatch
@@ -224,7 +213,7 @@ for e in range(epochs):
         grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
         optimizer.step()
     
-        if step % 10 == 0:
+        if step % 20 == 0:
             step_time, dl_time = steplog.get_avg_step_time(num_steps=20), steplog.get_avg_dl_time(num_steps=20)
 
             print(f"step {step} epoch {epoch:.2f} loss: {loss.item()} step_time: {step_time:.2f} dl_time: {dl_time:.2f} ")
@@ -241,12 +230,10 @@ for e in range(epochs):
     wandb.log({"step": step, "epoch": epoch, "loss_eval": el, "eval_clipscore": eval_clipscore()})
 
     # save after each epoch
-    # transformer.save_pretrained(f"IN1k-256px_e{e}")
     max_retries, retry_delay = 100, 20
     for attempt in range(max_retries):
         try:
-            # transformer.push_to_hub("g-ronimo/HanaDitB-0528-SmolLM2-360M-256px", variant=f"epoch{e}", private=True)
-            transformer.push_to_hub("g-ronimo/HanaDitB_0530_beta-7", variant=f"epoch{e}", private=True)
+            transformer.push_to_hub("g-ronimo/HanaDitB_0530_beta-8", variant=f"epoch{e}", private=True)
             break
         except Exception as e:
             if attempt < max_retries - 1:
@@ -256,9 +243,6 @@ for e in range(epochs):
             else:
                 print(f"Max retries reached. Skipping upload")
 
-
-# log a big 10x10 gallery 
-wandb.log({"final_gallery": wandb.Image(eval_images())})
 
 wandb.finish()
 

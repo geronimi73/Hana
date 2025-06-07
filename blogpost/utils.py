@@ -14,8 +14,6 @@ from datasets import load_dataset
 # stop complaining
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-###############
 def load_imagenet_1k_vl_enriched_recaped():
     import requests, gzip, json
     from io import BytesIO
@@ -31,27 +29,23 @@ def load_imagenet_1k_vl_enriched_recaped():
         data = json.loads(gz.read().decode('utf-8'))
     return data
 
-def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=256, label_dropout=0.1):
+def load_IN1k256px_AR(batch_size=512, batch_size_eval=256, label_dropout=0.1):
     splits_train = ["train_AR_1_to_1", "train_AR_3_to_4", "train_AR_4_to_3"]
     splits_eval = ["validation_AR_1_to_1", "validation_AR_3_to_4", "validation_AR_4_to_3"]
 
     ds = load_dataset("g-ronimo/IN1k256-AR-buckets-bfl16latents_dc-ae-f32c32-sana-1.0")
 
-    dataloader_train = ImageNet96ARDataset(
+    dataloader_train = ImageNetARDataset(
         ds, 
         splits=splits_train, 
-        text_enc=text_encoder, 
-        tokenizer=tokenizer, 
         bs=batch_size, 
         label_dropout=label_dropout,
         ddp=False,
     )
 
-    dataloader_eval = ImageNet96ARDataset(
+    dataloader_eval = ImageNetARDataset(
         ds, 
         splits=splits_eval, 
-        text_enc=text_encoder, 
-        tokenizer=tokenizer, 
         bs=batch_size, 
         label_dropout=None,
         ddp=False
@@ -59,19 +53,19 @@ def load_IN1k256px_AR(tokenizer, text_encoder, batch_size=512, batch_size_eval=2
 
     return dataloader_train, dataloader_eval
 
-class ImageNet96ARDataset(torch.utils.data.Dataset):
+class ImageNetARDataset(torch.utils.data.Dataset):
     def __init__(
-        self, hf_dataset, splits, text_enc, tokenizer, bs, label_dropout=None, ddp=False, col_id="image_id", col_label="label", col_latent="latent"
+        self, hf_dataset, splits, bs, label_dropout=None, ddp=False, col_id="image_id", col_label="label", col_latent="latent"
     ):
         self.hf_dataset = hf_dataset
-        self.splits = splits  # each split is one aspect ratio
-        self.col_label, self.col_latent, self.col_id = col_label, col_latent, col_id
-        self.text_enc, self.tokenizer =  text_enc, tokenizer
-        self.tokenizer.padding_side = "right"
-        self.prompt_len = 50
-        self.in1k_recaps = load_imagenet_1k_vl_enriched_recaped()
         self.bs = bs
+        # each split is one aspect ratio
+        self.splits = splits  
+        self.col_label, self.col_latent, self.col_id = col_label, col_latent, col_id
         self.label_dropout = label_dropout
+
+        # load md2, qwen2 and smolvlm captions
+        self.in1k_recaps = load_imagenet_1k_vl_enriched_recaped()
 
         seed = 42
 
@@ -88,8 +82,6 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
             )
 
     def collate(self, items):
-        # i[self.col_label][0] is BLIP2, i[self.col_label][1] is moondream2
-        # labels = [i[self.col_label][2] for i in items]
         labels = [
             # random pick between md2, qwen2 and smolvlm
             self.in1k_recaps[i[self.col_id]][random.randint(0, 2)]
@@ -105,14 +97,6 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
 
         return labels, latents
   
-    def encode_prompts(self, prompts):
-        prompts_tok = self.tokenizer(
-            prompts, padding="max_length", truncation=True, max_length=self.prompt_len, return_attention_mask=True, return_tensors="pt"
-        )
-        with torch.no_grad():
-            prompts_encoded = self.text_enc(**prompts_tok.to(self.text_enc.device))
-        return prompts_encoded.last_hidden_state, prompts_tok.attention_mask
-
     def __iter__(self):
         # Reset iterators at the beginning of each epoch
         iterators = { split: iter(dataloader) for split, dataloader in self.dataloaders.items() }
@@ -130,9 +114,8 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
             # Try to get the next batch
             try:
                 labels, latents = next(iterators[split]) 
-                label_embs, label_atnmasks = self.encode_prompts(labels)
-                # latents = latents.to(dtype).to(device)
-                yield labels, latents, label_embs, label_atnmasks
+
+                yield labels, latents
             # dataloader is exhausted
             except StopIteration: active_dataloaders.remove(split)
 
@@ -141,16 +124,6 @@ class ImageNet96ARDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return sum([len(self.samplers[split]) for split in self.splits]) // self.bs
-
-
-
-##############
-
-
-
-
-
-
 
 
 def load_IN1k128px(batch_size=512, batch_size_eval=256):
