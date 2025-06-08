@@ -14,18 +14,18 @@ from utils import (
     encode_prompt, 
     add_random_noise,
     pil_clipscore,
-    SanaDiTBSmolLM360M,
     StepLogger,
     pil_concat,
     pil_add_text,
     latent_to_PIL,
+    SanaDiTBSmolLM360M,
     load_IN1k256px_AR,
 )
 
 lr = 5e-4
 bs = 256
 epochs = 100
-latent_dim = [1, 32, 8, 8]
+latent_dim = [1, 32, 8, 8] # 8*32 = 256px
 eval_prompts = [
     "a mountain landscape",
     "a green plant with a brown stem",
@@ -80,7 +80,6 @@ generate = partial(
 )
 
 dataloader_train, dataloader_eval = load_IN1k256px_AR(batch_size=bs, label_dropout=0.1)
-# dataloader_train, dataloader_eval = load_CC12MIN21K256px(batch_size=bs, label_dropout=0.1)
 
 print(f"#batches train: {len(dataloader_train)}")
 print(f"#samples train: ~{len(dataloader_train) * bs}")
@@ -168,7 +167,7 @@ def eval_loss():
 
 # Setup logging 
 wandb.init(
-    project="IN128px", 
+    project="Hana-ImageNet1k", 
     name=f"{transformer_params:.1f}M_BS-{bs}_LR-{lr}_{epochs}-epochs"
 ).log_code(".", include_fn=lambda path: path.endswith(".py") or path.endswith(".ipynb") or path.endswith(".json"))
 
@@ -213,12 +212,14 @@ for e in range(epochs):
         grad_norm = torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
         optimizer.step()
     
+        # log every 20 steps
         if step % 20 == 0:
             step_time, dl_time = steplog.get_avg_step_time(num_steps=20), steplog.get_avg_dl_time(num_steps=20)
 
             print(f"step {step} epoch {epoch:.2f} loss: {loss.item()} step_time: {step_time:.2f} dl_time: {dl_time:.2f} ")
             wandb.log({"step": step, "step_time": step_time, "dl_time": dl_time, "epoch": epoch, "loss_train": loss.item(), "grad_norm": grad_norm})
 
+        # eval images every 500 steps
         if step % 500 == 0:
             wandb.log({"step": step, "epoch": epoch, "eval_images": wandb.Image(eval_images())})
 
@@ -242,7 +243,6 @@ for e in range(epochs):
                 time.sleep(retry_delay)
             else:
                 print(f"Max retries reached. Skipping upload")
-
 
 wandb.finish()
 

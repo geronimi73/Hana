@@ -14,6 +14,15 @@ from datasets import load_dataset
 # stop complaining
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+def make_grid(images, rows=1, cols=None):
+    if cols is None: cols = len(images)
+    w, h = images[0].size
+    grid = Image.new('RGB', size=(cols*w, rows*h))
+    for i, image in enumerate(images):
+        grid.paste(image, box=(i%cols*w, i//cols*h))
+    return grid
+
+
 def load_imagenet_1k_vl_enriched_recaped():
     import requests, gzip, json
     from io import BytesIO
@@ -125,223 +134,6 @@ class ImageNetARDataset(torch.utils.data.Dataset):
     def __len__(self):
         return sum([len(self.samplers[split]) for split in self.splits]) // self.bs
 
-
-def load_IN1k128px(batch_size=512, batch_size_eval=256):
-    from torch.utils.data import DataLoader
-    from datasets import load_dataset
-
-    dataset_repo ="g-ronimo/IN1k-128-latents_dc-ae-f32c32-sana-1.0"
-
-    def collate(items):
-        # drop 10% of the labels
-        labels = [ i["label"] if random.random() > 0.1 else "" for i in items ]
-
-        latents = torch.Tensor([i["latent"] for i in items])
-        B, num_aug, _, _, _ = latents.shape
-        # augmentation 0 = original image
-        aug_idx = 0
-        batch_idx = torch.arange(B)
-        latents = latents[batch_idx, aug_idx] 
-
-        return labels, latents
-
-    ds = load_dataset(dataset_repo)
-    dataloader_train = DataLoader(
-        ds["train"], 
-        batch_size=batch_size, 
-        collate_fn=collate, 
-        num_workers=10, 
-        prefetch_factor=2,
-    )
-    dataloader_eval = DataLoader(ds["test"], 
-        batch_size=batch_size_eval, 
-        collate_fn=collate, 
-        num_workers=10,
-    )
-
-    return dataloader_train, dataloader_eval
-
-def load_CC12MIN21K256px(batch_size=512, batch_size_eval=256, label_dropout=0.1):
-    from datasets import load_dataset
-
-    ds = load_dataset(
-        "g-ronimo/CC12M_IN21K-256px-splits_dc-ae-f32c32-sana-1.0",
-        # cache_dir="workspace/hf_cache",
-        num_proc=8,
-    )
-    dataloader_train = ShapeBatchingDataset(
-        ds["train"], 
-        batch_size=batch_size,
-        label_dropout=label_dropout,
-        num_workers=6, 
-        prefetch_factor=2,
-    )
-    dataloader_eval = ShapeBatchingDataset(
-        ds["test"], 
-        batch_size=batch_size_eval,
-        label_dropout=0.0,
-        num_workers=4, 
-    )
-
-    return dataloader_train, dataloader_eval
-
-
-def load_IN1k256px(batch_size=512, batch_size_eval=256, label_dropout=0.1):
-    from datasets import load_dataset
-
-    ds = load_dataset(
-        "g-ronimo/IN1k256-bfl16latents_shape_dc-ae-f32c32-sana-1.0",
-        num_proc=4,
-    )
-    dataloader_train = ShapeBatchingDataset(
-        ds["train"], 
-        batch_size=batch_size,
-        num_workers=6, 
-        prefetch_factor=2,
-        label_dropout=label_dropout,
-    )
-    dataloader_eval = ShapeBatchingDataset(
-        ds["validation"], 
-        batch_size=batch_size_eval,
-        num_workers=4, 
-        label_dropout=0.0,
-    )
-
-    return dataloader_train, dataloader_eval
-
-class ShapeBatchingDataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        hf_dataset, 
-        batch_size,
-        label_dropout=0.1,
-        col_id="image_id",
-        col_label="label", 
-        col_latent="latent", 
-        col_latentshape="latent_shape",
-        num_workers=4, 
-        prefetch_factor=2,
-        seed=42,
-    ):
-        self.hf_dataset = hf_dataset
-        self.col_label, self.col_latent, self.col_id, self.col_latentshape = col_label, col_latent, col_id, col_latentshape
-        self.batch_size = batch_size
-        self.sampler = RandomSampler(hf_dataset, generator=torch.manual_seed(seed))
-        self.label_dropout = label_dropout
-
-        # preload samples with DataLoader, because accessing the hf dataset is expensive (90% of time spent in formatting.py:144(extract_row))
-        self.dataloader = DataLoader(
-            hf_dataset, 
-            sampler=self.sampler, 
-            collate_fn=lambda x: x, 
-            batch_size=batch_size * 2, 
-            num_workers=num_workers, 
-            prefetch_factor=prefetch_factor,
-        )
-    
-    def __iter__(self):
-        samples_by_shape, epoch = {}, 0
-
-        # while True:
-        #     if isinstance(self.sampler, DistributedSampler): self.sampler.set_epoch(epoch)
-
-        for samples in self.dataloader:
-            for sample in samples:
-                shape = tuple(sample[self.col_latentshape])
-    
-                # group items by shape
-                if not shape in samples_by_shape: samples_by_shape[shape] = []
-                samples_by_shape[shape].append(sample)
-    
-                # once we have enough items of a given shape -> collate and yield a batch
-                if len(samples_by_shape[shape]) == self.batch_size: 
-                    yield self.prepare_batch(samples_by_shape[shape], shape)
-                    samples_by_shape[shape] = []
-
-        for shape in samples_by_shape:
-            if len(samples_by_shape[shape]) > 0:
-                yield self.prepare_batch(samples_by_shape[shape], shape)
-        # epoch += 1
-                
-    def prepare_batch(self, items, shape):
-        latent_shape = [len(items)]+list(shape)
-
-        # if we have more than one label -> random pick (between md2, qwen2 and smolvlm)
-        labels = [
-            item[self.col_label][random.randint(1, len(item[self.col_label])-1)] 
-            if isinstance(item[self.col_label], list)
-            else item[self.col_label]
-            for item in items
-        ]
-
-        # drop 10% of the labels
-        labels = [ label if random.random() > self.label_dropout else "" for label in labels ]
-
-        latents = torch.Tensor([item[self.col_latent] for item in items]).reshape(latent_shape)
-
-        return labels, latents
-
-    def __len__(self): return len(self.sampler) // self.batch_size
-
-
-def SanaDiTS():
-    from diffusers import SanaTransformer2DModel
-    sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
-
-    config = SanaTransformer2DModel.load_config(sana_repo, subfolder="transformer")
-    config["num_layers"] = 12
-
-    config["caption_channels"] = 768
-    config["num_attention_heads"] = 6
-    config["attention_head_dim"] = 64
-    config["cross_attention_dim"] = 384
-    config["num_cross_attention_heads"] = 6
-    config["cross_attention_head_dim"] = 64
-
-    # Sanity check
-    hidden_dim = config["num_attention_heads"] * config["attention_head_dim"] 
-    xatn_dim, xatn_heads, xatn_headdim  = itemgetter(
-        "cross_attention_dim", 
-        "num_cross_attention_heads",
-        "cross_attention_head_dim",
-    )(config)
-
-    print("Model width:", hidden_dim)
-    assert hidden_dim == xatn_dim, f"Mismatch, cross_attention_dim={xatn_dim}"
-    assert hidden_dim == xatn_heads * xatn_headdim, f"Mismatch, {xatn_heads} * {xatn_headdim} = {xatn_heads * xatn_headdim}"
-
-    return SanaTransformer2DModel.from_config(config)
-
-def SanaDiTB():
-    from diffusers import SanaTransformer2DModel
-    sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
-
-    config = SanaTransformer2DModel.load_config(sana_repo, subfolder="transformer")
-    config["num_layers"] = 12
-    config["caption_channels"] = 768
-    config["dropout"] = 0.1
-
-    config["num_attention_heads"] = 12
-    config["attention_head_dim"] = 64
-
-    config["cross_attention_dim"] = 768
-    config["num_cross_attention_heads"] = 12
-    config["cross_attention_head_dim"] = 64
-
-    # Sanity check
-    hidden_dim = config["num_attention_heads"] * config["attention_head_dim"] 
-    xatn_dim, xatn_heads, xatn_headdim  = itemgetter(
-        "cross_attention_dim", 
-        "num_cross_attention_heads",
-        "cross_attention_head_dim",
-    )(config)
-
-    print("Model width:", hidden_dim)
-    assert hidden_dim == xatn_dim, f"Mismatch, cross_attention_dim={xatn_dim}"
-    assert hidden_dim == xatn_heads * xatn_headdim, f"Mismatch, {xatn_heads} * {xatn_headdim} = {xatn_heads * xatn_headdim}"
-
-    return SanaTransformer2DModel.from_config(config)
-
 def SanaDiTBSmolLM360M(atn_dropout=0.1):
     from diffusers import SanaTransformer2DModel
     sana_repo = "Efficient-Large-Model/Sana_600M_1024px_diffusers"
@@ -445,7 +237,7 @@ def add_random_noise(latents, timesteps=1000, dist="uniform"):
 
     return latents_noisy.to(latents.dtype), timesteps, noise
     
-def encode_prompt(prompt, tokenizer, text_encoder, max_length=50, add_special_tokens=False):
+def encode_prompt(prompt, tokenizer, text_encoder, max_length=50, add_special_tokens=False, **kwargs):
     # lower case prompt! took a long time to find that this is necessary: https://github.com/huggingface/diffusers/blob/e8aacda762e311505ba05ae340af23b149e37af3/src/diffusers/pipelines/sana/pipeline_sana.py#L433
     tokenizer.padding_side = "right"
     if isinstance(prompt, list):
