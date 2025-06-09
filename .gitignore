@@ -8,3 +8,7 @@ local_secrets.py
 /notes/2025-03-03_VAE-test/.ipynb_checkpoints
 .*
 __*
+*.xlsx
+blogpost/runpod_setup.ipynb
+screenlog.*
+/blogpost/images
