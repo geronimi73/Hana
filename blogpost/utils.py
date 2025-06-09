@@ -164,7 +164,7 @@ def SanaDiTBSmolLM360M(atn_dropout=0.1):
 
     return SanaTransformer2DModel.from_config(config)
 
-def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10, latent_dim = [1, 32, 8, 8], guidance_scale = None, neg_prompt = "", seed=None, max_prompt_tok=50):
+def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10, latent_dim = [1, 32, 8, 8], guidance_scale = None, neg_prompt = "", seed=None, max_prompt_tok=50, add_special_tokens=False):
     device, dtype = transformer.device, transformer.dtype
     do_cfg = guidance_scale is not None
 
@@ -173,7 +173,8 @@ def generate(prompt, transformer, tokenizer, text_encoder, dcae, num_steps = 10,
         [prompt, neg_prompt] if do_cfg else prompt, 
         tokenizer, 
         text_encoder,
-        max_length = max_prompt_tok
+        max_length = max_prompt_tok,
+        add_special_tokens = add_special_tokens
     )
         
     # Divide 1000 -> 0 in equally sized steps
